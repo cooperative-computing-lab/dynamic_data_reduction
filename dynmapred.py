@@ -91,7 +91,7 @@ class DynMapReduce:
         self._accumulator = accumulator
 
         self._max_active = 10
-        self._task_active = set()
+        self._task_active = 0
 
         self._id_to_output = {}
 
@@ -142,6 +142,7 @@ class DynMapReduce:
 
         task.add_output(result, "out")
 
+        task.set_cores(1)
         task.set_category(f"fetch#{ds}")
         task.metadata = {"type": "fetch", "dataset": ds}
         self._ds_outputs[ds] = result
@@ -199,6 +200,7 @@ class DynMapReduce:
         for t in firsts:
             task.add_input(self._id_to_output[t.id], f"input_{t.id}")
 
+        task.set_cores(1)
         task.set_category(f"accumulating#{ds}")
         task.metadata = {"type": "accumulating", "dataset": ds}
         self._id_to_output[self.submit(task)] = result_file
@@ -209,6 +211,7 @@ class DynMapReduce:
             print(f"task {t.id} '{t.category}' done: {t.result} {t.std_output}")
             if t.successful():
                 ds = t.metadata["dataset"]
+                self._task_active -= 1
                 self._ds_active_count[ds] -= 1
                 self._ds_done_count[ds] += 1
                 self._ds_to_accumulate[ds].append(t)
@@ -221,6 +224,7 @@ class DynMapReduce:
         task.add_input(self._coffea_dir, "coffea")
 
         ds = task.metadata["dataset"]
+        self._task_active += 1
         self._ds_active_count[ds] += 1
         tid = self.manager.submit(task)
 
@@ -228,8 +232,12 @@ class DynMapReduce:
 
     def generate_tasks(self, datasets):
         for ds, info in datasets.items():
+            max = 10
             for datum in info:
                 yield (datum, ds)
+                max -= 1
+                if max < 0:
+                    break
             self._ds_all_submitted[ds] = True
 
     def compute(
@@ -245,7 +253,7 @@ class DynMapReduce:
         self._add_proc_task(datum, dataset)
         while not self.manager.empty():
             for (datum, dataset) in data_iter:
-                if len(self._task_active) >= self._max_active:
+                if self._task_active >= self._max_active:
                     break
                 self._add_proc_task(datum, dataset)
 

@@ -5,6 +5,7 @@ from coffea.nanoevents import NanoEventsFactory, PFNanoAODSchema
 import hist.dask as dhist
 import awkward as ak
 import ndcctools.taskvine as vine
+import cloudpickle
 
 data_root = "/afs/crc.nd.edu/user/b/btovar/src/dynmapred/data/samples"
 data = {
@@ -65,15 +66,18 @@ data = {
     ]
 }
 
+with open("dv3_preprocessed.pkl", "rb") as f:
+    data = cloudpickle.load(f)
+
 
 def source_connector(file_info):
     d = {
-        file_info["file"]: {"object_path": "Events", "metadata": file_info["metadata"]}
+        file_info["file"]: {"object_path": "Events"} #, "metadata": file_info["metadata"]}
     }
     events = NanoEventsFactory.from_root(
         d,
         schemaclass=PFNanoAODSchema,
-        metadata=dict(file_info["metadata"])
+        #metadata=dict(file_info["metadata"])
     )
 
     return events.events()
@@ -123,7 +127,7 @@ def accumulator(a, b):
 # import sys
 # sys.exit(0)
 
-mgr = vine.Manager(port=9123)
+mgr = vine.Manager(port=9129, name="hello_from_the_other_side")
 dmr = DynMapReduce(mgr, source_connector=source_connector, processor=processor, accumulator=accumulator)
 result = dmr.compute(data)
 
