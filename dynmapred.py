@@ -8,12 +8,17 @@ import cloudpickle
 import lz4.frame
 import sys
 
+from collections import defaultdict
+
 import ndcctools.taskvine as vine
 
 
 def wrap_processing(processor, source_connector, datum, local_executor="threads", local_executor_args=None):
+    import os
+
     if not local_executor_args:
         local_executor_args = {}
+    local_executor_args.setdefault("nthreads", os.environ.get("CORES", 1))
 
     datum_post = source_connector(datum)
 
@@ -26,7 +31,7 @@ def wrap_processing(processor, source_connector, datum, local_executor="threads"
 def accumulate(accumulator, result_names, to_file=True):
     out = None
 
-    for r in result_names:
+    for r in sorted(result_names):
         with lz4.frame.open(r, "rb") as fp:
             other = cloudpickle.load(fp)
 
@@ -45,8 +50,11 @@ def accumulate(accumulator, result_names, to_file=True):
 
 def accumulate_tree(accumulator, result_names, to_file=True, local_executor='threads', local_executor_args=None):
     import dask
+    import os
+
     if not local_executor_args:
         local_executor_args = {}
+    local_executor_args.setdefault("nthreads", os.environ.get("CORES", 1))
 
     def load_file(filename):
         with lz4.frame.open(r, "rb") as fp:
@@ -54,16 +62,18 @@ def accumulate_tree(accumulator, result_names, to_file=True, local_executor='thr
 
     to_reduce = []
     task_graph = {}
-    for r in result_names:
+    for r in sorted(result_names):
         key = ("load", len(task_graph))
         task_graph[key] = (load_file, r)
         to_reduce.append(key)
 
     while len(to_reduce) > 1:
         key = ("merge", len(task_graph))
-        firsts, to_reduce = to_reduce[0:2], to_reduce[2:]
+        firsts, to_reduce = to_reduce[:2], to_reduce[2:]
         task_graph[key] = (accumulator, *firsts)
         to_reduce.append(key)
+
+    print(task_graph)
 
     out = dask.get(task_graph, to_reduce[0], executor=local_executor, **local_executor_args)
     if to_file:
@@ -85,11 +95,15 @@ class DynMapReduce:
 
         self._id_to_output = {}
 
-        self._active_proc_tasks = []
-        self._tasks_to_accumulate = []
-        self._accumulation_size = 5
+        self._accumulation_size = 30
 
         self._last_accum_id = None
+
+        self._ds_done_count = defaultdict(int)
+        self._ds_active_count = defaultdict(int)
+        self._ds_all_submitted = defaultdict(lambda: False)
+        self._ds_to_accumulate = defaultdict(lambda: [])
+        self._ds_outputs = defaultdict(lambda: None)
 
         self._set_env()
 
@@ -118,7 +132,22 @@ class DynMapReduce:
     def manager(self):
         return self._manager
 
-    def _add_proc_task(self, datum, local_executor='threads', local_executor_args=None):
+    def _add_fetch_task(self, result_task):
+        task = vine.Task("cp in out")
+
+        ds = result_task.metadata["dataset"]
+
+        result = self.manager.declare_file(f"{self.manager.staging_directory}/output_{result_task.id}", cache=False)
+        task.add_input(self._id_to_output[result_task.id], "in")
+
+        task.add_output(result, "out")
+
+        task.set_category(f"fetch#{ds}")
+        task.metadata = {"type": "fetch", "dataset": ds}
+        self._ds_outputs[ds] = result
+        self.submit(task)
+
+    def _add_proc_task(self, datum, dataset, local_executor='threads', local_executor_args=None):
         result_file = self.manager.declare_temp()
         #task = vine.FunctionCall(self._lib_name, 'wrap_processing', self._processor, datum)
 
@@ -126,72 +155,82 @@ class DynMapReduce:
         task = vine.PythonTask(wrap_processing, self._processor, self._source_connector, datum)
         # task.add_environment(self._env)
 
+        ds = dataset
+        task.set_category(f"processing#{ds}")
+        task.metadata = {"type": "processing", "dataset": ds}
+
         task.set_cores(1)
         task.add_output(result_file, "proc_out.p")
-        task.set_category("processing")
         self._id_to_output[self.submit(task)] = result_file
 
-    def _add_accum_tasks(self, temp_result=True):
-        if len(self._tasks_to_accumulate) < 1:
-            return
+    def _add_accum_tasks(self, task, temp_result=True):
+        cat, ds = task.category.split("#")
 
-        if len(self._tasks_to_accumulate) == 1 and self._last_accum_id:
-            return
+        accum_size = max(2, self._accumulation_size)
+        if self._ds_all_submitted[ds]:
+            if self._ds_active_count[ds] == 0:
+                if len(self._ds_to_accumulate[ds]) == 1:
+                    last = self._ds_to_accumulate[ds].pop()
+                    if last.metadata["type"] != "fetch":
+                        self._add_fetch_task(last)
+                    return
 
-        set_last = False
-        accum_size = self._accumulation_size
-        if self.manager.empty():
-            set_last = True
-            temp_result = False
-            accum_size = 1
+                accum_size = min(accum_size, len(self._ds_to_accumulate[ds]))
 
-        while len(self._tasks_to_accumulate) >= accum_size:
-            firsts, self._tasks_to_accumulate = (
-                self._tasks_to_accumulate[: self._accumulation_size],
-                self._tasks_to_accumulate[self._accumulation_size:],
-            )
+        if len(self._ds_to_accumulate[ds]) < accum_size:
+               return
 
-            # task = vine.FunctionCall(self._lib_name, "accumulate", self._accumulator, [f"input_{tid}" for tid in firsts])
-            task = vine.PythonTask(
-                accumulate_tree,
-                self._accumulator,
-                [f"input_{tid}" for tid in firsts],
-                local_executor_args={"cores": 4},
-            )
-            # task.add_environment(self._env)
+        firsts, self._ds_to_accumulate[ds] = (
+            self._ds_to_accumulate[ds][:accum_size],
+            self._ds_to_accumulate[ds][accum_size:]
+        )
 
-            if temp_result:
-                result_file = self.manager.declare_temp()
-            else:
-                result_file = self.manager.declare_file(f"out_{id(self)}")
+        # task = vine.FunctionCall(self._lib_name, "accumulate", self._accumulator, [f"input_{tid}" for tid in firsts])
+        task = vine.PythonTask(
+            # accumulate_tree,
+            accumulate,
+            self._accumulator,
+            [f"input_{t.id}" for t in firsts],
+        )
 
-            task.set_cores(1)
-            task.add_output(result_file, "accum_out.p")
+        result_file = self.manager.declare_temp()
+        task.add_output(result_file, "accum_out.p")
 
-            for tid in firsts:
-                task.add_input(self._id_to_output[tid], f"input_{tid}")
+        for t in firsts:
+            task.add_input(self._id_to_output[t.id], f"input_{t.id}")
 
-            task.set_category("accumulating")
-
-            tid = self.submit(task)
-            self._id_to_output[tid] = result_file
-
-            if set_last:
-                self._last_accum_id = tid
+        task.set_category(f"accumulating#{ds}")
+        task.metadata = {"type": "accumulating", "dataset": ds}
+        self._id_to_output[self.submit(task)] = result_file
 
     def wait(self, timeout):
         t = self.manager.wait(5)
         if t:
-            self._task_active.remove(t.id)
-            print(f"task {t.id} {t.category} done: {t.result}")
+            print(f"task {t.id} '{t.category}' done: {t.result} {t.std_output}")
+            if t.successful():
+                ds = t.metadata["dataset"]
+                self._ds_active_count[ds] -= 1
+                self._ds_done_count[ds] += 1
+                self._ds_to_accumulate[ds].append(t)
+            else:
+                raise RuntimeError(f"task could not be completed {t.output}")
         return t
 
     def submit(self, task):
         task.add_input(self._dynmapred_file, "dynmapred.py")
         task.add_input(self._coffea_dir, "coffea")
+
+        ds = task.metadata["dataset"]
+        self._ds_active_count[ds] += 1
         tid = self.manager.submit(task)
-        self._task_active.add(tid)
+
         return tid
+
+    def generate_tasks(self, datasets):
+        for ds, info in datasets.items():
+            for datum in info:
+                yield (datum, ds)
+            self._ds_all_submitted[ds] = True
 
     def compute(
         self,
@@ -200,32 +239,31 @@ class DynMapReduce:
         remote_executor=None,
         remote_executor_args=None,
     ):
-        data = iter(data)
+        data_iter = self.generate_tasks(data)
 
-        self._add_proc_task(next(data))
-
-        last_id = None
+        (datum, dataset) = next(data_iter)
+        self._add_proc_task(datum, dataset)
         while not self.manager.empty():
-            for d in data:
+            for (datum, dataset) in data_iter:
                 if len(self._task_active) >= self._max_active:
                     break
-                self._add_proc_task(d)
+                self._add_proc_task(datum, dataset)
 
             t = self.wait(5)
             if t:
                 if t.successful():
-                    last_id = t.id
-                    self._tasks_to_accumulate.append(t.id)
-                    self._add_accum_tasks()
+                    self._add_accum_tasks(t)
                 else:
                     print("-", t.output)
                     print(t.std_output)
 
-        if last_id:
-            with lz4.frame.open(f"out_{id(self)}", "rb") as fp:
-                final_result = cloudpickle.load(fp)
+        results = {}
+        for ds in data:
+            f = self._ds_outputs[ds]
+            with lz4.frame.open(f"{f.source()}", "rb") as fp:
+                results[ds] = cloudpickle.load(fp)
 
-            return final_result
+        return results
 
 
 if __name__ == '__main__':

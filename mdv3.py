@@ -7,33 +7,63 @@ import awkward as ak
 import ndcctools.taskvine as vine
 
 data_root = "/afs/crc.nd.edu/user/b/btovar/src/dynmapred/data/samples"
-data = [
-    {
-        "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_11.root",
-        "object_path": "Events",
-        "metadata": "some dataset",
-    },
-    {
-        "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_12.root",
-        "object_path": "Events",
-        "metadata": "some dataset",
-    },
-    {
-        "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_13.root",
-        "object_path": "Events",
-        "metadata": "some dataset",
-    },
-    {
-        "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_14.root",
-        "object_path": "Events",
-        "metadata": "some dataset",
-    },
-    {
-        "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_15.root",
-        "object_path": "Events",
-        "metadata": "some dataset",
-    },
-]
+data = {
+    "some dataset A": [
+        {
+            "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_11.root",
+            "object_path": "Events",
+            "metadata": {"dataset": "some dataset A"},
+        },
+        {
+            "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_12.root",
+            "object_path": "Events",
+            "metadata": {"dataset": "some dataset A"},
+        },
+        {
+            "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_13.root",
+            "object_path": "Events",
+            "metadata": {"dataset": "some dataset A"},
+        },
+        {
+            "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_14.root",
+            "object_path": "Events",
+            "metadata": {"dataset": "some dataset A"},
+        },
+        {
+            "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_15.root",
+            "object_path": "Events",
+            "metadata": {"dataset": "some dataset A"},
+        },
+    ],
+
+    "some dataset B": [
+        {
+            "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_11.root",
+            "object_path": "Events",
+            "metadata": {"dataset": "some dataset B"},
+        },
+        {
+            "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_12.root",
+            "object_path": "Events",
+            "metadata": {"dataset": "some dataset B"},
+        },
+        {
+            "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_13.root",
+            "object_path": "Events",
+            "metadata": {"dataset": "some dataset B"},
+        },
+        {
+            "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_14.root",
+            "object_path": "Events",
+            "metadata": {"dataset": "some dataset B"},
+        },
+        {
+            "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_15.root",
+            "object_path": "Events",
+            "metadata": {"dataset": "some dataset B"},
+        },
+    ]
+}
 
 
 def source_connector(file_info):
@@ -43,7 +73,7 @@ def source_connector(file_info):
     events = NanoEventsFactory.from_root(
         d,
         schemaclass=PFNanoAODSchema,
-        metadata={"dataset": "some_datset"},
+        metadata=dict(file_info["metadata"])
     )
 
     return events.events()
@@ -79,8 +109,7 @@ def processor(events):
 
 
 def accumulator(a, b):
-    a += b
-    return b
+    return a + b
 
 # import dynmapred
 #
