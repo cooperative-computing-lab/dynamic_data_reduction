@@ -12,13 +12,14 @@ def source_connector(file_info):
 
 
 @dask.delayed
-def preprocess(filename):
+def preprocess(file_info):
     import uproot
 
-    with uproot.open({filename: "Events"}) as f:
+    with uproot.open({file_info["file"]: "Events"}) as f:
         return [
             {
-                "file": filename,
+                "file": file_info["file"],
+                "metadata": {"label": file_info["label"]},
                 "object_path": "Events",
                 "steps": [[0, f.num_entries]],
                 "num_entries": f.num_entries,
@@ -75,15 +76,19 @@ except (IOError, EOFError, FileNotFoundError):
         for ds, info in datasets.items():
             all_files[ds] = []
             for path in pathlib.Path(f"{source_root}/{info['path']}").glob("*.root"):
-                all_files[ds].append(str(path.absolute()))
-            print(all_files)
+                all_files[ds].append({"file": str(path.absolute()), "label": info['label']})
+        print(all_files)
 
         with open("dv3_all_files.pkl", "wb") as f:
             cloudpickle.dump(all_files, f)
 
-        mgr = vine.Manager(port=9129)
+        mgr = vine.Manager(port=9129, name="btovar-dynmapred")
         dmr = DynMapReduce(
-            mgr, source_connector=source_connector, processor=preprocess, accumulator=accumulate
+            mgr,
+            source_connector=source_connector,
+            processor=preprocess,
+            accumulator=accumulate,
+            x509_proxy="x509up_u196886",
         )
         result = dmr.compute(all_files)
 

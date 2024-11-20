@@ -124,13 +124,16 @@ class DynMapReduce:
     accumulator: Callable[[H, H], H] = default_accumualtor
     max_tasks_active: Optional[int] = None
     max_tasks_per_dataset: Optional[int] = None
+    max_task_retries: int = 10
     accumulation_size: int = 10
     resources_processing: Optional[Mapping[str, float]] = None
     resources_accumualting: Optional[Mapping[str, float]] = None
     environment: Optional[str] = None
+    x509_proxy: Optional[str] = None
 
     def __post_init__(self):
         self._task_active = 0
+        self._all_proc_submitted = False
         self._id_to_output = {}
         self._ds_done_count = defaultdict(int)
         self._ds_active_count = defaultdict(int)
@@ -167,6 +170,10 @@ class DynMapReduce:
         self._dynmapred_file = self.manager.declare_file(__file__, cache=True)
         self._coffea_dir = self.manager.declare_file("coffea", cache=True)
 
+        self._proxy_file = None
+        if self.x509_proxy:
+            self._proxy_file = self.manager.declare_file(self.x509_proxy, cache=True)
+
     def _add_fetch_task(self, result_task):
         task = vine.Task("cp in out")
 
@@ -195,7 +202,7 @@ class DynMapReduce:
             )
 
     def _add_proc_task(
-        self, datum, dataset, local_executor="threads", local_executor_args=None
+        self, datum, dataset, attempt=1, local_executor="threads", local_executor_args=None
     ):
         result_file = self.manager.declare_temp()
 
@@ -208,7 +215,7 @@ class DynMapReduce:
 
         ds = dataset
         task.set_category(f"processing#{ds}")
-        task.metadata = {"type": "processing", "dataset": ds}
+        task.metadata = {"type": "processing", "dataset": ds, "input": datum, "retries": attempt}
         task.add_output(result_file, "proc_out.p")
         self._id_to_output[self.submit(task)] = result_file
 
@@ -250,26 +257,43 @@ class DynMapReduce:
 
         task.set_cores(1)
         task.set_category(f"accumulating#{ds}")
-        task.metadata = {"type": "accumulating", "dataset": ds}
+        task.metadata = {"type": "processing", "dataset": ds}
+        task.add_output(result_file, "proc_out.p")
         self._id_to_output[self.submit(task)] = result_file
 
     def wait(self, timeout):
         t = self.manager.wait(5)
         if t:
-            print(f"task {t.id} '{t.category}' done: {t.result} {t.std_output}")
+            print(f"task {t.id} '{t.category}' done: {t.result} status: {t.exit_code}")
+            ds = t.metadata["dataset"]
+            self._task_active -= 1
+            self._ds_active_count[ds] -= 1
             if t.successful():
-                ds = t.metadata["dataset"]
-                self._task_active -= 1
-                self._ds_active_count[ds] -= 1
                 self._ds_done_count[ds] += 1
                 self._ds_to_accumulate[ds].append(t)
             else:
-                raise RuntimeError(f"task could not be completed {t.output}")
+                if (
+                    t.metadata["type"] == "processing"
+                    and t.metadata["retries"] < self.max_task_retries
+                ):
+                    print(f"resubmitting task {t.id} attempts so far: {t.metadata['retries']}")
+                    self._add_proc_task(
+                        t.metadata["input"], ds, attempt=t.metadata["retries"] + 1
+                    )
+                else:
+                    raise RuntimeError(
+                        f"task could not be completed\n{t.std_output}\n---\n{t.output}"
+                    )
         return t
 
     def submit(self, task):
         task.add_input(self._dynmapred_file, "dynmapred.py")
         task.add_input(self._coffea_dir, "coffea")
+        task.set_retries(self.max_task_retries)
+
+        if self._proxy_file:
+            task.add_input(self._proxy_file, "proxy.pem")
+            task.set_env_var("X509_USER_PROXY", "proxy.pem")
 
         ds = task.metadata["dataset"]
         self._task_active += 1
@@ -288,6 +312,7 @@ class DynMapReduce:
                     if max < 1:
                         break
             self._ds_all_submitted[ds] = True
+        self._all_proc_submitted = True
 
     def compute(
         self,
@@ -299,21 +324,18 @@ class DynMapReduce:
         self._set_resources(data)
         data_iter = self.generate_tasks(data)
 
-        (datum, dataset) = next(data_iter)
-        self._add_proc_task(datum, dataset)
-        while not self.manager.empty():
+        while True:
             for datum, dataset in data_iter:
+                self._add_proc_task(datum, dataset)
                 if self.max_tasks_active and self.max_tasks_active < self._task_active:
                     break
-                self._add_proc_task(datum, dataset)
 
             t = self.wait(5)
             if t:
-                if t.successful():
-                    self._add_accum_tasks(t)
-                else:
-                    print("-", t.output)
-                    print(t.std_output)
+                self._add_accum_tasks(t)
+
+            if self._all_proc_submitted and self.manager.empty():
+                break
 
         results = {}
         for ds in data:
