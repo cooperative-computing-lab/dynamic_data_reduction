@@ -68,6 +68,7 @@ data = {
 
 with open("dv3_preprocessed.pkl", "rb") as f:
     data = cloudpickle.load(f)
+    data = {"hbb": data["hbb"]}
 
 
 def source_connector(file_info):
@@ -113,7 +114,8 @@ def processor(events):
 
 
 def accumulator(a, b):
-    return a + b
+    a += b
+    return a
 
 # import dynmapred
 #
@@ -127,8 +129,22 @@ def accumulator(a, b):
 # import sys
 # sys.exit(0)
 
-mgr = vine.Manager(port=9129, name="hello_from_the_other_side")
-dmr = DynMapReduce(mgr, source_connector=source_connector, processor=processor, accumulator=accumulator)
+
+mgr = vine.Manager(port=0, name="btovar-dynmapred")
+dmr = DynMapReduce(
+    mgr,
+    source_connector=source_connector,
+    processor=processor,
+    accumulator=accumulator,
+    accumulation_size=20,
+    max_tasks_active=500,
+    max_tasks_per_dataset=8,
+)
+
 result = dmr.compute(data)
 
-print(result)
+with open("result_ac.pkl", "wb") as f:
+    cloudpickle.dump(result, f)
+
+import pprint
+pprint.pprint(result)
