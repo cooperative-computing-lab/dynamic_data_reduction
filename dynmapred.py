@@ -15,10 +15,10 @@ from typing import Any, Callable, Dict, Mapping, Optional, TypeVar
 
 def wrap_processing(
     processor,
-    source_connector,
+    source_postprocess,
     datum,
     processor_args=None,
-    source_connector_args=None,
+    source_postprocess_args=None,
     local_executor="threads",
     local_executor_args=None,
 ):
@@ -31,10 +31,10 @@ def wrap_processing(
     if processor_args is None:
         processor_args = {}
 
-    if source_connector_args is None:
-        source_connector_args = {}
+    if source_postprocess_args is None:
+        source_postprocess_args = {}
 
-    datum_post = source_connector(datum, **source_connector_args)
+    datum_post = source_postprocess(datum, **source_postprocess_args)
 
     result = processor(datum_post, **processor_args).compute(
         executor=local_executor, **local_executor_args
@@ -129,10 +129,15 @@ def identity_source_conector(datum, **extra_args):
     return datum
 
 
+def identity_source_preprocess(datum, **extra_args):
+    yield datum
+
+
 def default_accumualtor(a, b, **extra_args):
     return a + b
 
 
+D = TypeVar("D")
 P = TypeVar("P")
 H = TypeVar("H")
 
@@ -141,7 +146,8 @@ H = TypeVar("H")
 class DynMapReduce:
     manager: vine.Manager
     processor: Callable[[P], H]
-    source_connector: Callable[[Any], P] = identity_source_conector
+    source_preprocess: Callable[[Any], D] = identity_source_preprocess
+    source_postprocess: Callable[[D], P] = identity_source_conector
     accumulator: Callable[[H, H], H] = default_accumualtor
     max_tasks_active: Optional[int] = None
     max_tasks_per_dataset: Optional[int] = None
@@ -150,7 +156,8 @@ class DynMapReduce:
     resources_processing: Optional[Mapping[str, float]] = None
     resources_accumualting: Optional[Mapping[str, float]] = None
     processor_args: Optional[Mapping[str, Any]] = None
-    source_connector_args: Optional[Mapping[str, Any]] = None
+    source_preprocess_args: Optional[Mapping[str, Any]] = None
+    source_postprocess_args: Optional[Mapping[str, Any]] = None
     accumulator_args: Optional[Mapping[str, Any]] = None
     environment: Optional[str] = None
     x509_proxy: Optional[str] = None
@@ -226,25 +233,25 @@ class DynMapReduce:
             )
 
     def _add_proc_task(
-        self, datum, dataset, local_executor="threads", local_executor_args=None
+        self, datum, dataset, local_executor="threads", local_executor_args=None, attempt=1
     ):
         result_file = self.manager.declare_temp()
 
         # task = vine.FunctionCall(self._lib_name, 'wrap_processing', self._processor, datum)
         task = vine.PythonTask(
-            wrap_processing, self.processor, self.source_connector, datum, self.processor_args, self.source_connector_args,
+            wrap_processing, self.processor, self.source_postprocess, datum, self.processor_args, self.source_postprocess_args,
         )
         if self.environment:
             task.add_environment(self.environment)
 
         ds = dataset
         task.set_category(f"processing#{ds}")
-        task.metadata = {"type": "processing", "dataset": ds, "input": datum}
+        task.metadata = {"type": "processing", "dataset": ds, "attempt": attempt, "input": datum}
         task.add_output(result_file, "proc_out.p")
         self._id_to_output[self.submit(task)] = result_file
 
     def _add_accum_tasks(self, task, temp_result=True):
-        cat, ds = task.category.split("#")
+        ds = task.metadata["dataset"]
 
         accum_size = max(2, self.accumulation_size)
         if self._ds_all_submitted[ds]:
@@ -305,7 +312,7 @@ class DynMapReduce:
                 if should_retry:
                     print(f"resubmitting task {t.id} attempts so far: {t.metadata['attempt']}")
                     self._add_proc_task(
-                        t.metadata["input"], ds,
+                        t.metadata["input"], ds, attempt=t.metadata["attempt"] + 1
                     )
                 else:
                     raise RuntimeError(
@@ -313,16 +320,10 @@ class DynMapReduce:
                     )
         return t
 
-    def submit(self, task, attempt=None):
+    def submit(self, task):
         task.add_input(self._dynmapred_file, "dynmapred.py")
         task.add_input(self._coffea_dir, "coffea")
         task.set_retries(self.max_task_retries)
-
-        new_attempt = attempt
-        if not new_attempt:
-            new_attempt = task.metadata.get("attempt", 0) + 1
-
-        task.metadata["attempt"] = new_attempt
 
         if self._proxy_file:
             task.add_input(self._proxy_file, "proxy.pem")
@@ -336,10 +337,15 @@ class DynMapReduce:
         return tid
 
     def generate_tasks(self, datasets):
+        args = self.source_preprocess_args
+        if args is None:
+            args = {}
+
         for ds, info in datasets.items():
             max = self.max_tasks_per_dataset
             for datum in info:
-                yield (datum, ds)
+                for sub_datum in self.source_preprocess(datum, **args):
+                    yield (sub_datum, ds)
                 if max is not None:
                     max -= 1
                     if max < 1:
@@ -380,8 +386,16 @@ class DynMapReduce:
 
 
 if __name__ == "__main__":
-    data = {"some_ds": (da.from_array(list(range(0, n * 1000000, n))[0:10]) for n in range(1, 3))}
+    import itertools
+    data = {"some_ds": list(itertools.pairwise(range(1, 13)))}
+
     # data = [da.from_array(list(range(0, n * 1000000, n))[0:10]) for n in range(1, 10000)]
+
+    def preprocess(pair):
+        yield from pair
+
+    def postprocess(n):
+        return da.from_array(list(range(0, n * 1000000, n))[0:10])
 
     def double_data(datum):
         return datum.map_blocks(lambda x: x * 2)
@@ -391,7 +405,7 @@ if __name__ == "__main__":
 
     mgr = vine.Manager(port=[9123, 9129], name="btovar-dynmapred")
     dmr = DynMapReduce(
-        mgr, source_connector=lambda x: x, processor=double_data, accumulator=add_data
+        mgr, source_preprocess=preprocess, source_postprocess=postprocess, processor=double_data, accumulator=add_data
     )
 
     workers = vine.Factory("local", manager=mgr)
