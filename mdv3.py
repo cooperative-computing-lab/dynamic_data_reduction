@@ -6,38 +6,61 @@ import cloudpickle
 import pprint
 
 
-def source_connector(file_info, **source_args):
+def source_preprocess(file_info, **source_args):
+    import math
+    file_chunk_size = source_args.get("file_step_size", 50000)
+
+    source_root = "root://hactar01.crc.nd.edu//store/user/cmoore24/samples/"
+    source_ceph = "/cms/cephfs/data/store/user/cmoore24/samples"
+
+    file_info["file"] = file_info["file"].replace(source_ceph, source_root)
+    num_entries = file_info["num_entries"]
+
+    chunk_adapted = math.ceil(num_entries / math.ceil(num_entries / file_chunk_size))
+    start = 0
+    while start < num_entries:
+        end = min(start + chunk_adapted, num_entries)
+        d = {
+                "file": file_info["file"],
+                "object_path": "Events",
+                "entry_start": start,
+                "entry_stop": end,
+                "metadata": file_info["metadata"]
+        }
+        yield d
+        start = end
+
+
+def source_postprocess(chunk_info, **source_args):
     from coffea.nanoevents import NanoEventsFactory, PFNanoAODSchema
     import math
     import os
 
-    source_root = "root://hactar01.crc.nd.edu//store/user/cmoore24/samples/"
-    source_ceph = "/cms/cephfs/data/store/user/cmoore24/samples"
-    file_info["file"] = file_info["file"].replace(source_ceph, source_root)
+    cores = source_args.get("cores", int(os.environ.get("CORES", 4)))
+    num_entries = chunk_info["entry_stop"] - chunk_info["entry_start"]
+    step = source_args.get("chunk_step_size", math.ceil(num_entries / cores))
+
+    steps = []
+    start = chunk_info["entry_start"]
+
+    while start < chunk_info["entry_stop"]:
+        end = min(start + step, chunk_info["entry_stop"])
+        steps.append([start, end])
+        start = end
 
     d = {
-        file_info["file"]: {
-            "object_path": "Events",
+        chunk_info["file"]: {
+            "object_path": chunk_info["object_path"],
+            "metadata": chunk_info["metadata"],
+            "steps": steps
         }
     }
-
-    num_entries = file_info.get("num_entries", None)
-    if num_entries and num_entries > 0:
-        cores = source_args.get("cores", os.environ.get("CORES", 1))
-        step = source_args.get("step", math.ceil(file_info["num_entries"] / cores))
-        steps = []
-        start = 0
-        while start < num_entries:
-            end = start + min(start + step, num_entries)
-            steps.append([start, end])
-            start = end
-        d[file_info["file"]["steps"]] = steps
 
     events = NanoEventsFactory.from_root(
         d,
         schemaclass=PFNanoAODSchema,
         uproot_options={"timeout": 3000},
-        metadata=dict(file_info["metadata"])
+        metadata=dict(chunk_info["metadata"])
     )
 
     return events.events()
@@ -153,23 +176,21 @@ if __name__ == '__main__':
         ]
     }
 
-    with open("dv3_preprocessed.pkl", "rb") as f:
+    with open("preprocessed/dv3_preprocessed.pkl", "rb") as f:
         data = cloudpickle.load(f)
 
         # data = {"hbb": data["hbb"]}
 
-
-
-
     mgr = vine.Manager(port=0, name="btovar-dynmapred")
     dmr = DynMapReduce(
         mgr,
-        source_connector=source_connector,
+        source_preprocess=source_preprocess,
+        source_postprocess=source_postprocess,
         processor=processor,
         accumulator=accumulator,
         accumulation_size=20,
-        max_tasks_active=600,
-        max_tasks_per_dataset=8,
+        max_tasks_active=1200,
+        max_sources_per_dataset=None,
         x509_proxy="x509up_u196886",
     )
 

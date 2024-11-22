@@ -43,7 +43,7 @@ class NanoAODSchema(BaseSchema):
     """
 
     __dask_capable__ = True
-    warn_missing_crossrefs = True
+    warn_missing_crossrefs = False
     error_missing_event_ids = True
 
     event_ids = ["run", "luminosityBlock", "event"]

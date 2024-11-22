@@ -41,7 +41,6 @@ def wrap_processing(
     )
     with lz4.frame.open("proc_out.p", "wb") as fp:
         cloudpickle.dump(result, fp)
-    print(result)
 
 
 def accumulate(accumulator, result_names, accumulator_args=None, to_file=True):
@@ -150,8 +149,8 @@ class DynMapReduce:
     source_postprocess: Callable[[D], P] = identity_source_conector
     accumulator: Callable[[H, H], H] = default_accumualtor
     max_tasks_active: Optional[int] = None
-    max_tasks_per_dataset: Optional[int] = None
-    max_task_retries: int = 2
+    max_sources_per_dataset: Optional[int] = None
+    max_task_retries: int = 5
     accumulation_size: int = 10
     resources_processing: Optional[Mapping[str, float]] = None
     resources_accumualting: Optional[Mapping[str, float]] = None
@@ -282,8 +281,7 @@ class DynMapReduce:
             to_file=True,
         )
 
-        #result_file = self.manager.declare_temp()
-        result_file = self.manager.declare_file("o", cache=True)
+        result_file = self.manager.declare_temp()
         task.add_output(result_file, "accum_out.p")
 
         for t in firsts:
@@ -297,9 +295,7 @@ class DynMapReduce:
     def wait(self, timeout):
         t = self.manager.wait(5)
         if t:
-            print(f"task {t.id} '{t.category}' exit code: {t.exit_code}, vine status: {t.result}")
-            print(f"{t.output}")
-            print(f"{t.std_output}")
+            print(f"task {t.id:6d} {t.category:<25} status: {t.result:<10} exit code: {t.exit_code:2d}")
 
             ds = t.metadata["dataset"]
             self._task_active -= 1
@@ -315,6 +311,9 @@ class DynMapReduce:
                         t.metadata["input"], ds, attempt=t.metadata["attempt"] + 1
                     )
                 else:
+                    print(f"{t.output}")
+                    print(f"{t.std_output}")
+                    print(f"{t.metadata['input']}")
                     raise RuntimeError(
                         f"task could not be completed\n{t.std_output}\n---\n{t.output}"
                     )
@@ -342,9 +341,10 @@ class DynMapReduce:
             args = {}
 
         for ds, info in datasets.items():
-            max = self.max_tasks_per_dataset
+            max = self.max_sources_per_dataset
             for datum in info:
-                for sub_datum in self.source_preprocess(datum, **args):
+                gen_ds = self.source_preprocess(datum, *args)
+                for sub_datum in gen_ds:
                     yield (sub_datum, ds)
                 if max is not None:
                     max -= 1
@@ -364,10 +364,11 @@ class DynMapReduce:
         data_iter = self.generate_tasks(data)
 
         while True:
-            for datum, dataset in data_iter:
-                self._add_proc_task(datum, dataset)
-                if self.max_tasks_active and self.max_tasks_active < self._task_active:
-                    break
+            if not self.max_tasks_active or self.max_tasks_active >= self._task_active:
+                for datum, dataset in data_iter:
+                    self._add_proc_task(datum, dataset)
+                    if self.max_tasks_active and self.max_tasks_active < self._task_active:
+                        break
 
             t = self.wait(5)
             if t:
