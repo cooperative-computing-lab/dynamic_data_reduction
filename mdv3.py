@@ -36,7 +36,13 @@ def source_postprocess(chunk_info, **source_args):
     import math
     import os
 
-    cores = source_args.get("cores", int(os.environ.get("CORES", 4)))
+    try:
+        print(chunk_info)
+        print(source_args)
+    except Exception as e:
+        print(e)
+
+    cores = source_args.get("cores", int(os.environ.get("CORES", 1)))
     num_entries = chunk_info["entry_stop"] - chunk_info["entry_start"]
     step = source_args.get("chunk_step_size", math.ceil(num_entries / cores))
 
@@ -191,6 +197,7 @@ if __name__ == '__main__':
         accumulation_size=20,
         max_tasks_active=1200,
         max_sources_per_dataset=None,
+        max_task_retries=1,
         x509_proxy="x509up_u196886",
     )
 

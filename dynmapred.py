@@ -5,6 +5,7 @@ import cloudpickle
 import lz4.frame
 import sys
 import rich
+import time
 from dataclasses import dataclass
 
 from collections import defaultdict
@@ -17,8 +18,8 @@ def wrap_processing(
     processor,
     source_postprocess,
     datum,
-    processor_args=None,
-    source_postprocess_args=None,
+    processor_args,
+    source_postprocess_args,
     local_executor="threads",
     local_executor_args=None,
 ):
@@ -149,6 +150,7 @@ class DynMapReduce:
     source_postprocess: Callable[[D], P] = identity_source_conector
     accumulator: Callable[[H, H], H] = default_accumualtor
     max_tasks_active: Optional[int] = None
+    max_tasks_submit_batch: Optional[int] = None
     max_sources_per_dataset: Optional[int] = None
     max_task_retries: int = 5
     accumulation_size: int = 10
@@ -162,7 +164,6 @@ class DynMapReduce:
     x509_proxy: Optional[str] = None
 
     def __post_init__(self):
-        self._task_active = 0
         self._all_proc_submitted = False
         self._id_to_output = {}
         self._ds_done_count = defaultdict(int)
@@ -171,11 +172,19 @@ class DynMapReduce:
         self._ds_to_accumulate = defaultdict(lambda: [])
         self._ds_outputs = defaultdict(lambda: None)
 
+        self._time_since_hungry_call = 0
+        self._tasks_needed_hungry_call = 0
+        self._tasks_active = 0
+        self._tasks_active_since_hungry_call = 0
+
         if not self.resources_processing:
             self.resources_processing = {"cores": 1}
 
         if not self.resources_accumualting:
             self.resources_accumualting = {"cores": 1}
+
+        self.manager.tune("hungry-minimum", 100)
+        self.manager.tune("prefer-dispatch", 1)
 
         self._set_env()
 
@@ -238,7 +247,12 @@ class DynMapReduce:
 
         # task = vine.FunctionCall(self._lib_name, 'wrap_processing', self._processor, datum)
         task = vine.PythonTask(
-            wrap_processing, self.processor, self.source_postprocess, datum, self.processor_args, self.source_postprocess_args,
+            wrap_processing,
+            self.processor,
+            self.source_postprocess,
+            datum,
+            self.processor_args,
+            self.source_postprocess_args,
         )
         if self.environment:
             task.add_environment(self.environment)
@@ -298,7 +312,8 @@ class DynMapReduce:
             print(f"task {t.id:6d} {t.category:<25} status: {t.result:<10} exit code: {t.exit_code:2d}")
 
             ds = t.metadata["dataset"]
-            self._task_active -= 1
+            self._tasks_active -= 1
+            self._tasks_active_since_hungry_call -= 1
             self._ds_active_count[ds] -= 1
             if t.successful():
                 self._ds_done_count[ds] += 1
@@ -329,7 +344,8 @@ class DynMapReduce:
             task.set_env_var("X509_USER_PROXY", "proxy.pem")
 
         ds = task.metadata["dataset"]
-        self._task_active += 1
+        self._tasks_active += 1
+        self._tasks_active_since_hungry_call += 1
         self._ds_active_count[ds] += 1
         tid = self.manager.submit(task)
 
@@ -353,6 +369,18 @@ class DynMapReduce:
             self._ds_all_submitted[ds] = True
         self._all_proc_submitted = True
 
+    def need_to_submit(self):
+        max_active = self.max_tasks_active if self.max_tasks_active else sys.maxsize
+        max_batch = self.max_tasks_submit_batch if self.max_tasks_submit_batch else sys.maxsize
+
+        current_time = time.time()
+        if current_time - self._time_since_hungry_call > 5:
+            self._time_since_hungry_call = current_time
+            self._tasks_needed_hungry_call = self.manager.hungry()
+            self._tasks_active_since_hungry_call = 0
+            print(f"queue is hungry for {self._tasks_needed_hungry_call} task(s)")
+        return max(0, min(max_active, max_batch, self._tasks_needed_hungry_call - self._tasks_active_since_hungry_call))
+
     def compute(
         self,
         data,
@@ -364,10 +392,12 @@ class DynMapReduce:
         data_iter = self.generate_tasks(data)
 
         while True:
-            if not self.max_tasks_active or self.max_tasks_active >= self._task_active:
+            to_submit = self.need_to_submit()
+            if to_submit > 0:
                 for datum, dataset in data_iter:
                     self._add_proc_task(datum, dataset)
-                    if self.max_tasks_active and self.max_tasks_active < self._task_active:
+                    to_submit -= 1
+                    if to_submit < 1:
                         break
 
             t = self.wait(5)
