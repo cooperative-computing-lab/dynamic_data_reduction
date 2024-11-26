@@ -186,6 +186,8 @@ class DynMapReduce:
         self.manager.tune("hungry-minimum", 100)
         self.manager.tune("prefer-dispatch", 1)
 
+        self._wait_timeout = 5
+
         self._set_env()
 
     def _set_env(self, env="env.tar.gz"):
@@ -307,8 +309,9 @@ class DynMapReduce:
         self._id_to_output[self.submit(task)] = result_file
 
     def wait(self, timeout):
-        t = self.manager.wait(5)
+        t = self.manager.wait(self._wait_timeout)
         if t:
+            self._wait_timeout = 0
             print(f"task {t.id:6d} {t.category:<25} status: {t.result:<10} exit code: {t.exit_code:2d}")
 
             ds = t.metadata["dataset"]
@@ -332,6 +335,8 @@ class DynMapReduce:
                     raise RuntimeError(
                         f"task could not be completed\n{t.std_output}\n---\n{t.output}"
                     )
+        else:
+            self._wait_timeout = 5
         return t
 
     def submit(self, task):
