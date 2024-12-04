@@ -172,10 +172,7 @@ class DynMapReduce:
         self._ds_to_accumulate = defaultdict(lambda: [])
         self._ds_outputs = defaultdict(lambda: None)
 
-        self._time_since_hungry_call = 0
-        self._tasks_needed_hungry_call = 0
         self._tasks_active = 0
-        self._tasks_active_since_hungry_call = 0
 
         if not self.resources_processing:
             self.resources_processing = {"cores": 1}
@@ -316,7 +313,6 @@ class DynMapReduce:
 
             ds = t.metadata["dataset"]
             self._tasks_active -= 1
-            self._tasks_active_since_hungry_call -= 1
             self._ds_active_count[ds] -= 1
             if t.successful():
                 self._ds_done_count[ds] += 1
@@ -350,7 +346,6 @@ class DynMapReduce:
 
         ds = task.metadata["dataset"]
         self._tasks_active += 1
-        self._tasks_active_since_hungry_call += 1
         self._ds_active_count[ds] += 1
         tid = self.manager.submit(task)
 
@@ -377,14 +372,10 @@ class DynMapReduce:
     def need_to_submit(self):
         max_active = self.max_tasks_active if self.max_tasks_active else sys.maxsize
         max_batch = self.max_tasks_submit_batch if self.max_tasks_submit_batch else sys.maxsize
+        hungry = self.manager.hungry()
 
-        current_time = time.time()
-        if current_time - self._time_since_hungry_call > 5:
-            self._time_since_hungry_call = current_time
-            self._tasks_needed_hungry_call = self.manager.hungry()
-            self._tasks_active_since_hungry_call = 0
-            print(f"queue is hungry for {self._tasks_needed_hungry_call} task(s)")
-        return max(0, min(max_active, max_batch, self._tasks_needed_hungry_call - self._tasks_active_since_hungry_call))
+        print(f"queue is hungry for {hungry} task(s)")
+        return max(0, min(max_active, max_batch, hungry))
 
     def compute(
         self,
