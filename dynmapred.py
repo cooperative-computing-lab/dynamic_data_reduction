@@ -4,14 +4,16 @@ import dask.array as da
 import cloudpickle
 import lz4.frame
 import sys
+import math
 import rich
 import time
+import uuid
 from dataclasses import dataclass
 
 from collections import defaultdict
 import ndcctools.taskvine as vine
 
-from typing import Any, Callable, Dict, Mapping, Optional, TypeVar
+from typing import Any, Callable, Mapping, Optional, TypeVar
 
 
 def wrap_processing(
@@ -154,6 +156,8 @@ class DynMapReduce:
     max_sources_per_dataset: Optional[int] = None
     max_task_retries: int = 5
     accumulation_size: int = 10
+    file_replication: int = 1
+    checkpoint_accumulations: bool = False
     resources_processing: Optional[Mapping[str, float]] = None
     resources_accumualting: Optional[Mapping[str, float]] = None
     processor_args: Optional[Mapping[str, Any]] = None
@@ -182,6 +186,7 @@ class DynMapReduce:
 
         self.manager.tune("hungry-minimum", 100)
         self.manager.tune("prefer-dispatch", 1)
+        self.manager.tune("temp-replica-count", 3)
 
         self._wait_timeout = 5
 
@@ -212,15 +217,18 @@ class DynMapReduce:
         if self.x509_proxy:
             self._proxy_file = self.manager.declare_file(self.x509_proxy, cache=True)
 
-    def _add_fetch_task(self, result_task):
-        task = vine.Task("cp -r in out")
-
+    def _add_fetch_task(self, result_task, attempt=1):
         ds = result_task.metadata["dataset"]
+        if self.checkpoint_accumulations and result_task.metadata["type"] == "accumulating":
+            self._ds_outputs[ds] = self._id_to_output[result_task.id]
+            return
 
+        task = vine.Task("cp -r in out")
         result = self.manager.declare_file(
             f"{self.manager.staging_directory}/output_{result_task.id}", cache=False
         )
         task.add_input(self._id_to_output[result_task.id], "in")
+        task.input_tasks = [result_task]
 
         task.add_output(result, "out")
 
@@ -228,7 +236,7 @@ class DynMapReduce:
         task.set_category(f"fetch#{ds}")
         task.metadata = {"type": "fetch", "dataset": ds}
         self._ds_outputs[ds] = result
-        self.submit(task)
+        self.submit(task, attempt)
 
     def _set_resources(self, data):
         for ds in data:
@@ -258,11 +266,12 @@ class DynMapReduce:
 
         ds = dataset
         task.set_category(f"processing#{ds}")
-        task.metadata = {"type": "processing", "dataset": ds, "attempt": attempt, "input": datum}
-        task.add_output(result_file, "proc_out.p")
-        self._id_to_output[self.submit(task)] = result_file
+        task.metadata = {"type": "processing", "dataset": ds, "input": datum}
 
-    def _add_accum_tasks(self, task, temp_result=True):
+        task.add_output(result_file, "proc_out.p")
+        self._id_to_output[self.submit(task, attempt)] = result_file
+
+    def _add_accum_tasks(self, task, temp_result=True, attempt=1):
         ds = task.metadata["dataset"]
 
         accum_size = max(2, self.accumulation_size)
@@ -279,31 +288,97 @@ class DynMapReduce:
         if len(self._ds_to_accumulate[ds]) < accum_size:
             return
 
-        firsts, self._ds_to_accumulate[ds] = (
-            self._ds_to_accumulate[ds][:accum_size],
-            self._ds_to_accumulate[ds][accum_size:],
-        )
+        while len(self._ds_to_accumulate[ds]) >= accum_size:
+            firsts, lasts = (
+                self._ds_to_accumulate[ds][:-accum_size],
+                self._ds_to_accumulate[ds][-accum_size:],
+            )
 
-        # task = vine.FunctionCall(self._lib_name, "accumulate", self._accumulator, [f"input_{tid}" for tid in firsts])
-        task = vine.PythonTask(
-            #accumulate_tree,
-            accumulate,
-            self.accumulator,
-            [f"input_{t.id}" for t in firsts],
-            accumulator_args=self.accumulator_args,
-            to_file=True,
-        )
+            self._ds_to_accumulate[ds] = firsts
 
-        result_file = self.manager.declare_temp()
-        task.add_output(result_file, "accum_out.p")
+            # task = vine.FunctionCall(self._lib_name, "accumulate", self._accumulator, [f"input_{tid}" for tid in firsts])
+            task = vine.PythonTask(
+                #accumulate_tree,
+                accumulate,
+                self.accumulator,
+                [f"input_{t.id}" for t in lasts],
+                accumulator_args=self.accumulator_args,
+                to_file=True,
+            )
 
-        for t in firsts:
-            task.add_input(self._id_to_output[t.id], f"input_{t.id}")
+            if self.checkpoint_accumulations:
+                result_file = self.manager.declare_file(
+                    f"{self.manager.staging_directory}/accum_{uuid.uuid4()}",
+                    unlink_when_done=True,
+                )
+            else:
+                result_file = self.manager.declare_temp()
 
-        task.set_category(f"accumulating#{ds}")
-        task.metadata = {"type": "accumulating", "dataset": ds}
+            task.add_output(result_file, "accum_out.p")
 
-        self._id_to_output[self.submit(task)] = result_file
+            for t in lasts:
+                task.add_input(self._id_to_output[t.id], f"input_{t.id}")
+
+            task.input_tasks = lasts
+
+            task.set_category(f"accumulating#{ds}")
+            task.metadata = {"type": "accumulating", "dataset": ds}
+
+            self._id_to_output[self.submit(task, attempt)] = result_file
+
+    def cleanup(self, task):
+        if task.metadata["type"] == "processing":
+            return
+
+        if not self.checkpoint_accumulations and task.metadata["type"] == "accumulating":
+            return
+
+        while task.input_tasks:
+            t = task.input_tasks.pop()
+            self.cleanup(t)
+            f = self._id_to_output.pop(t.id)
+            self.manager.undeclare_file(f)
+
+    def resubmit(self, t):
+        print(f"resubmitting task {t.id} {t.category}, attempts so far: {t.attempt}")
+
+        if t.attempt > self.max_task_retries:
+            return False
+
+        f = self._id_to_output.pop(t.id)
+        self.manager.undeclare_file(f)
+
+        ds = t.metadata["dataset"]
+
+        if t.metadata["type"] == "fetch":
+            self._add_fetch_task(t.input_tasks[0], attempt=t.attempt+1)
+            t.input_tasks = []
+            return True
+
+        if t.metadata["type"] == "accumulating":
+            if t.result == "resource exhaustion":
+                if len(t.input_tasks) < 3 or self.accum_size < 2:
+                    return False
+                else:
+                    self.accum_size = int(math.ceil(self.accum_size / 2))
+                    print("reducing accumulation size to {self.accum_size}")
+
+            print("reducing accumulation size to {self.accum_size}")
+            self._ds_to_accumulate[ds].extend(t.input_tasks[1:])
+            self._add_accum_tasks(t.input_tasks[0], attempt=t.attempt+1)
+            t.input_tasks = []
+            return True
+        return False
+
+
+
+
+        ds = t.metadata["dataset"]
+        should_retry = t.metadata["type"] == "processing" and t.metadata["attempt"] < self.max_task_retries
+        if False and should_retry:
+            self._add_proc_task(
+                t.metadata["input"], ds, attempt=t.metadata["attempt"] + 1
+            )
 
     def wait(self, timeout):
         t = self.manager.wait(self._wait_timeout)
@@ -317,28 +392,26 @@ class DynMapReduce:
             if t.successful():
                 self._ds_done_count[ds] += 1
                 self._ds_to_accumulate[ds].append(t)
-            else:
-                should_retry = t.metadata["type"] == "processing" and t.metadata["attempt"] < self.max_task_retries
-                if should_retry:
-                    print(f"resubmitting task {t.id} attempts so far: {t.metadata['attempt']}")
-                    self._add_proc_task(
-                        t.metadata["input"], ds, attempt=t.metadata["attempt"] + 1
-                    )
-                else:
-                    print(f"{t.output}")
-                    print(f"{t.std_output}")
+                self.cleanup(t)
+            elif not self.resubmit(t):
+                print(f"{t.output}")
+                print(f"{t.std_output}")
+                try:
                     print(f"{t.metadata['input']}")
-                    raise RuntimeError(
-                        f"task could not be completed\n{t.std_output}\n---\n{t.output}"
-                    )
+                except KeyError:
+                    pass
+                raise RuntimeError(
+                    f"task could not be completed\n{t.std_output}\n---\n{t.output}"
+                )
         else:
             self._wait_timeout = 5
         return t
 
-    def submit(self, task):
+    def submit(self, task, attempt=1):
         task.add_input(self._dynmapred_file, "dynmapred.py")
         task.add_input(self._coffea_dir, "coffea")
         task.set_retries(self.max_task_retries)
+        task.attempt = attempt
 
         if self._proxy_file:
             task.add_input(self._proxy_file, "proxy.pem")

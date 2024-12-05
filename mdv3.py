@@ -9,6 +9,7 @@ import pprint
 def source_preprocess(file_info, **source_args):
     import math
     file_chunk_size = source_args.get("file_step_size", 50000)
+    file_chunk_size = source_args.get("file_step_size", 300000)
 
     source_root = "root://hactar01.crc.nd.edu//store/user/cmoore24/samples/"
     source_ceph = "/cms/cephfs/data/store/user/cmoore24/samples"
@@ -187,7 +188,7 @@ if __name__ == '__main__':
 
         # data = {"hbb": data["hbb"]}
 
-    mgr = vine.Manager(port=0, name="btovar-dynmapred")
+    mgr = vine.Manager(port=0, name="btovar-dynmapred", staging_path="/tmp/btovar")
     dmr = DynMapReduce(
         mgr,
         source_preprocess=source_preprocess,
@@ -198,6 +199,7 @@ if __name__ == '__main__':
         max_tasks_active=1200,
         max_sources_per_dataset=None,
         max_task_retries=1,
+        checkpoint_accumulations=True,
         x509_proxy="x509up_u196886",
     )
 
