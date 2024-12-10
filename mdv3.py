@@ -8,6 +8,7 @@ import pprint
 
 def source_preprocess(file_info, **source_args):
     import math
+
     file_chunk_size = source_args.get("file_step_size", 50000)
     file_chunk_size = source_args.get("file_step_size", 300000)
 
@@ -22,11 +23,11 @@ def source_preprocess(file_info, **source_args):
     while start < num_entries:
         end = min(start + chunk_adapted, num_entries)
         d = {
-                "file": file_info["file"],
-                "object_path": "Events",
-                "entry_start": start,
-                "entry_stop": end,
-                "metadata": file_info["metadata"]
+            "file": file_info["file"],
+            "object_path": "Events",
+            "entry_start": start,
+            "entry_stop": end,
+            "metadata": file_info["metadata"],
         }
         yield d
         start = end
@@ -36,12 +37,6 @@ def source_postprocess(chunk_info, **source_args):
     from coffea.nanoevents import NanoEventsFactory, PFNanoAODSchema
     import math
     import os
-
-    try:
-        print(chunk_info)
-        print(source_args)
-    except Exception as e:
-        print(e)
 
     cores = source_args.get("cores", int(os.environ.get("CORES", 1)))
     num_entries = chunk_info["entry_stop"] - chunk_info["entry_start"]
@@ -59,7 +54,7 @@ def source_postprocess(chunk_info, **source_args):
         chunk_info["file"]: {
             "object_path": chunk_info["object_path"],
             "metadata": chunk_info["metadata"],
-            "steps": steps
+            "steps": steps,
         }
     }
 
@@ -67,7 +62,7 @@ def source_postprocess(chunk_info, **source_args):
         d,
         schemaclass=PFNanoAODSchema,
         uproot_options={"timeout": 3000},
-        metadata=dict(chunk_info["metadata"])
+        metadata=dict(chunk_info["metadata"]),
     )
 
     return events.events()
@@ -109,8 +104,7 @@ def processor(events):
 
     boosted_fatjet = fatjet[cut]
     boosted_fatjet.constituents.pf["pt"] = (
-        boosted_fatjet.constituents.pf.pt
-        * boosted_fatjet.constituents.pf.puppiWeight
+        boosted_fatjet.constituents.pf.pt * boosted_fatjet.constituents.pf.puppiWeight
     )
     btag = dhist.Hist.new.Reg(40, 0, 1, name="Btag", label="Btag").Weight()
     btag.fill(Btag=ak.flatten(boosted_fatjet.btagDDBvLV2))
@@ -123,7 +117,24 @@ def accumulator(a, b):
     return a
 
 
-if __name__ == '__main__':
+def checkpoint_fn(t):
+    c = False
+    if t.checkpoint_distance > 10:
+        c = True
+
+    cumulative = t.cumulative_exec_time
+    if cumulative > 3600:
+        c = True
+
+    if c:
+        print(
+            f"checkpointing {t.description()} {t.checkpoint_distance} {t.exec_time} {t.cumulative_exec_time}"
+        )
+
+    return c
+
+
+if __name__ == "__main__":
     data_root = "/afs/crc.nd.edu/user/b/btovar/src/dynmapred/data/samples"
     data = {
         "some dataset A": [
@@ -153,7 +164,6 @@ if __name__ == '__main__':
                 "metadata": {"dataset": "some dataset A"},
             },
         ],
-
         "some dataset B": [
             {
                 "file": f"{data_root}/flat400/mass100/RunIISummer20UL17PFNANOAODSIM_11.root",
@@ -180,7 +190,7 @@ if __name__ == '__main__':
                 "object_path": "Events",
                 "metadata": {"dataset": "some dataset B"},
             },
-        ]
+        ],
     }
 
     with open("preprocessed/dv3_preprocessed.pkl", "rb") as f:
@@ -195,12 +205,13 @@ if __name__ == '__main__':
         source_postprocess=source_postprocess,
         processor=processor,
         accumulator=accumulator,
-        accumulation_size=20,
+        accumulation_size=10,
         max_tasks_active=1200,
         max_sources_per_dataset=None,
-        max_task_retries=1,
-        checkpoint_accumulations=True,
+        max_task_retries=5,
+        checkpoint_accumulations=False,
         x509_proxy="x509up_u196886",
+        checkpoint_fn=checkpoint_fn,
     )
 
     result = dmr.compute(data)
