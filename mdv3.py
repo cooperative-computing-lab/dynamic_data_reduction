@@ -68,7 +68,7 @@ def source_postprocess(chunk_info, **source_args):
     return events.events()
 
 
-def processor(events):
+def btag(events):
     import hist.dask as dhist
     import awkward as ak
 
@@ -203,7 +203,7 @@ if __name__ == "__main__":
         mgr,
         source_preprocess=source_preprocess,
         source_postprocess=source_postprocess,
-        processor=processor,
+        processors={"btag_1": btag, "btag_2": btag},
         accumulator=accumulator,
         accumulation_size=10,
         max_tasks_active=1200,
