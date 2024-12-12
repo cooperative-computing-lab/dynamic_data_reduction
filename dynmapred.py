@@ -6,6 +6,7 @@ import lz4.frame
 import sys
 import math
 import re
+import os
 
 # import rich
 import uuid
@@ -270,9 +271,9 @@ class DynMapRedTask(abc.ABC):
         if not self._result_file:
             if self.is_checkpoint():
                 if self.is_final():
-                    name = f"{self.manager.results_directory}/{self.dataset}"
+                    name = f"{self.manager.results_directory}/{self.processor_name}/{self.dataset_name}"
                 else:
-                    name = f"{self.manager.staging_directory}/{uuid.uuid4()}"
+                    name = f"{self.manager.staging_directory}/{self.processor_name}/{uuid.uuid4()}"
                 self._result_file = self.manager.declare_file(
                     name,
                     cache=(not self.is_final()),
@@ -350,6 +351,8 @@ class DynMapRedTask(abc.ABC):
         if not self.completed():
             raise RuntimeError("task has not completed, so it cannot be resubmitted.")
         if self.attempt_number >= self.manager.max_task_retries:
+            print(self.description())
+            print(self.std_output)
             raise RuntimeError(
                 f"task {self.id} has reached the maximum number of retries ({self.manager.max_task_retries})"
             )
@@ -503,6 +506,7 @@ class DynMapReduce:
     checkpoint_accumulations: bool = False
     checkpoint_fn: Optional[Callable[[DynMapRedTask], bool]] = None
     environment: Optional[str] = None
+    extra_files: Optional[list[str]] = None
     file_replication: int = 1
     max_sources_per_dataset: Optional[int] = None
     max_task_retries: int = 5
@@ -555,10 +559,20 @@ class DynMapReduce:
 
         self.manager.tune("hungry-minimum", 100)
         self.manager.tune("prefer-dispatch", 1)
-        self.manager.tune("temp-replica-count", 3)
+        self.manager.tune("temp-replica-count", self.file_replication)
+
+        self._extra_files_map = {
+            "dynmapred.py": self.manager.declare_file(__file__, cache=True)
+        }
+
+        if self.x509_proxy:
+            self._extra_files_map["proxy.pem"] = self.manager.declare_file(self.x509_proxy, cache=True)
+
+        if self.extra_files:
+            for path in self.extra_files:
+                self._extra_files_map[os.path.basename(path)] = self.manager.declare_file(path, cache=True)
 
         self._wait_timeout = 5
-
         self._graph_file = None
         if self.graph_output_file:
             self._graph_file = open(f"{self.manager.logging_directory}/graph.csv", "w")
@@ -586,14 +600,8 @@ class DynMapReduce:
         envf = self.manager.declare_poncho(env)
         libtask.add_environment(envf)
         self.manager.install_library(libtask)
-
         self._env = envf
-        self._dynmapred_file = self.manager.declare_file(__file__, cache=True)
-        self._coffea_dir = self.manager.declare_file("coffea", cache=True)
 
-        self._proxy_file = None
-        if self.x509_proxy:
-            self._proxy_file = self.manager.declare_file(self.x509_proxy, cache=True)
 
     def _set_resources(self, data):
         for ds in data:
@@ -689,12 +697,12 @@ class DynMapReduce:
         return None
 
     def submit(self, task):
-        task.add_input(self._dynmapred_file, "dynmapred.py")
-        task.add_input(self._coffea_dir, "coffea")
+        for path, f in self._extra_files_map.items():
+            task.add_input(f, path)
+
         task.set_retries(self.max_task_retries)
 
-        if self._proxy_file:
-            task.add_input(self._proxy_file, "proxy.pem")
+        if self.x509_proxy:
             task.set_env_var("X509_USER_PROXY", "proxy.pem")
 
         self._tasks_active += 1
