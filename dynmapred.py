@@ -337,7 +337,8 @@ class DynMapRedTask(abc.ABC):
     def _clone_next_attempt(self, datum=None, input_tasks=None):
         return type(self)(
             self.manager,
-            self.dataset,
+            self.processor_name,
+            self.dataset_name,
             datum if datum is not None else self.datum,
             input_tasks if input_tasks is not None else self.input_tasks,
             checkpoint=self.checkpoint,
@@ -561,7 +562,7 @@ class DynMapReduce:
         self._graph_file = None
         if self.graph_output_file:
             self._graph_file = open(f"{self.manager.logging_directory}/graph.csv", "w")
-            self._graph_file.write("id,category,checkpoint,exec_time,inputs")
+            self._graph_file.write("id,category,checkpoint,exec_time,cum_time,inputs\n")
 
         self._set_env()
 
@@ -624,23 +625,27 @@ class DynMapReduce:
         ds.set_final(t)
 
     def _add_accum_tasks(self, dataset):
+        force = False
         accum_size = max(2, self.accumulation_size)
         if dataset.all_proc_submitted and dataset.active_count == 0:
             accum_size = min(accum_size, len(dataset.pending_accumulation))
+            force = True
 
-        if len(dataset.pending_accumulation) < accum_size:
+        if not force and len(dataset.pending_accumulation) < 2*accum_size - accum_size/2:
             return
 
+        dataset.pending_accumulation.sort(key=lambda t: len(t.input_tasks) if t.input_tasks else 0)
+
         while len(dataset.pending_accumulation) >= accum_size:
-            firsts, lasts = (
+            heads, tails = (
                 dataset.pending_accumulation[:accum_size],
                 dataset.pending_accumulation[accum_size:],
             )
 
-            dataset.pending_accumulation = lasts
-            first = firsts[0]
+            dataset.pending_accumulation = tails
+            first = heads[0]
             t = DynMapRedAccumTask(
-                self, first.processor_name, first.dataset_name, None, firsts, checkpoint=self.checkpoint_accumulations
+                self, first.processor_name, first.dataset_name, None, heads, checkpoint=self.checkpoint_accumulations
             )
             self.submit(t)
 

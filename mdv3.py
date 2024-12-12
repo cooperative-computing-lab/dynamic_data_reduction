@@ -119,11 +119,11 @@ def accumulator(a, b):
 
 def checkpoint_fn(t):
     c = False
-    if t.checkpoint_distance > 10:
+    if t.checkpoint_distance > 20:
         c = True
 
     cumulative = t.cumulative_exec_time
-    if cumulative > 3600:
+    if cumulative > 1800:
         c = True
 
     if c:
@@ -205,7 +205,7 @@ if __name__ == "__main__":
         source_postprocess=source_postprocess,
         processors={"btag_1": btag, "btag_2": btag},
         accumulator=accumulator,
-        accumulation_size=10,
+        accumulation_size=50,
         max_tasks_active=1200,
         max_sources_per_dataset=None,
         max_task_retries=5,
