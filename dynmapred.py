@@ -196,9 +196,14 @@ class DatasetCounts:
     def inc_submitted(self, n=1):
         self.active_count += n
 
-    def add_completed(self, t):
+    def add_completed(self, manager, t):
         self.active_count -= 1
+
         if t.successful():
+            if not t.is_checkpoint() and manager.should_checkpoint(t):
+                manager._add_fetch_task(t, final=False)
+                return
+
             self.done_count += 1
             if not t.is_final():
                 self.pending_accumulation.append(t)
@@ -654,16 +659,6 @@ class DynMapReduce:
             print(f"{target.processor_name}#{target.dataset_name} completed!")
 
     def _add_fetch_task(self, target, final):
-        # if final and target.is_checkpoint():
-        #     target.final = True
-        #     try:
-        #         shutil.copy2(
-        #             target.result_file.source(),
-        #             f"{self.results_directory}/{target.processor_name}/{target.dataset_name}",
-        #         )
-        #     except shutil.SameFileError:
-        #         pass
-
         t = DynMapRedFetchTask(self, target.processor_name, target.dataset_name, None, [target], final=final)
         self.submit(t)
 
@@ -819,14 +814,12 @@ class DynMapReduce:
             t = self.wait(5)
             if t:
                 if t.successful():
-                    if not t.is_checkpoint() and self.should_checkpoint(t):
-                        self._add_fetch_task(t, final=False)
+                    t.dataset.add_completed(self, t)
+                    if t.is_final():
+                        self._set_result(t)
                     else:
-                        t.dataset.add_completed(t)
-                        if t.is_final():
-                            self._set_result(t)
-                        else:
-                            self._accum_or_fetch(t)
+                        self._accum_or_fetch(t)
+
                 elif not self.resubmit(t):
                     raise RuntimeError(
                         f"task {t.datum} could not be completed\n{t.std_output}\n---\n{t.output}"
