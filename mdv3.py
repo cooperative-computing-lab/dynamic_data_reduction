@@ -54,7 +54,7 @@ def source_postprocess(chunk_info, **source_args):
         chunk_info["file"]: {
             "object_path": chunk_info["object_path"],
             "metadata": chunk_info["metadata"],
-            "steps": steps,
+            # "steps": steps,
         }
     }
 
@@ -381,14 +381,16 @@ if __name__ == "__main__":
 
         # data = {"hbb": data["hbb"]}
 
-    mgr = vine.Manager(port=0, name="btovar-dynmapred", staging_path="/tmp/btovar")
+    mgr = vine.Manager(port=[9123, 9129], name="btovar-dynmapred", staging_path="/tmp/btovar")
+    mgr.tune("hungry-minimum", 1)
+
     dmr = DynMapReduce(
         mgr,
         source_preprocess=source_preprocess,
         source_postprocess=source_postprocess,
         processors={
-            # name: make_processor(name) for name in ["Color_Ring_Var", "Btag", "D3B1"]
-            name: make_processor(name) for name in ["Mass", "SDmass", "Btag", "MRatio", "N2", "N3", "nConstituents"]
+            name: make_processor(name) for name in ["Color_Ring_Var"]
+            # name: make_processor(name) for name in ["Mass", "SDmass", "Btag", "MRatio", "N2", "N3", "nConstituents"]
             # name: make_processor(name) for name in [ "SDmass" ]
         },
         accumulator=accumulator,
@@ -396,11 +398,13 @@ if __name__ == "__main__":
         file_replication=3,
         max_tasks_active=1200,
         max_sources_per_dataset=None,
-        max_task_retries=10,
+        max_task_retries=1,
         checkpoint_accumulations=False,
         x509_proxy="x509up_u196886",
         checkpoint_fn=checkpoint_fn,
         extra_files=["mdv3_fns.py"],
+        resources_processing={"cores": 1},
+        resources_accumualting={"cores": 1},
     )
 
     result = dmr.compute(data)

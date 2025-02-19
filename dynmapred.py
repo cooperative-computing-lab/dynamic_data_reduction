@@ -7,14 +7,13 @@ import sys
 import math
 import re
 import os
+from pathlib import Path
 
 # import rich
 import uuid
 import abc
 import dataclasses
-from pathlib import Path, PurePath
 
-from collections import defaultdict
 import ndcctools.taskvine as vine
 
 from typing import Any, Callable, Hashable, Mapping, List, Optional, TypeVar, Self
@@ -22,6 +21,8 @@ from typing import Any, Callable, Hashable, Mapping, List, Optional, TypeVar, Se
 D = TypeVar("D")
 P = TypeVar("P")
 H = TypeVar("H")
+
+priority_separation = 1_000_000
 
 
 def wrap_processing(
@@ -64,11 +65,17 @@ def accumulate(accumulator, result_names, accumulator_args=None, to_file=True):
         with lz4.frame.open(r, "rb") as fp:
             other = cloudpickle.load(fp)
 
+        if other is None:
+            continue
+
         if out is None:
             out = other
         else:
             # out = accumulator(out, other, **accumulator_args)
-            out = accumulator(out, other)
+            try:
+                out = accumulator(out, other)
+            except TypeError:
+                pass
             del other
 
     if to_file:
@@ -154,14 +161,14 @@ def default_accumualtor(a, b, **extra_args):
 class ProcCounts:
     name: str
     fn: Callable[[P], H]
-    rank: int = 0
+    priority: int = 0
 
     def __post_init__(self):
         self._datasets: dict[str, DatasetCounts] = {}
         self.all_proc_submitted = False
 
     def dataset(self, name):
-        return self._datasets.setdefault(name, DatasetCounts(name))
+        return self._datasets.setdefault(name, DatasetCounts(name, self.priority - len(self._datasets)))
 
     def inc_submitted(self, dataset):
         self.datasets(dataset).inc_submitted()
@@ -176,6 +183,7 @@ class ProcCounts:
 @dataclasses.dataclass
 class DatasetCounts:
     name: str
+    priority: int
 
     def __post_init__(self):
         self.all_proc_submitted = False
@@ -183,19 +191,27 @@ class DatasetCounts:
         self.done_count = 0
         self.active_count = 0
         self.output_file = None
+        self.result = None
 
     def inc_submitted(self, n=1):
         self.active_count += n
 
-    def add_completed(self, task):
+    def add_completed(self, t):
         self.active_count -= 1
-        if task.successful():
+        if t.successful():
             self.done_count += 1
-            if not task.is_final():
-                self.pending_accumulation.append(task)
+            if not t.is_final():
+                self.pending_accumulation.append(t)
+            if t.is_checkpoint():
+                print(
+                    f"retrieved {t.description()} {t.checkpoint_distance} {t.exec_time} {t.cumulative_exec_time}"
+                )
 
     def set_final(self, task):
         self.output_file = task.result_file
+
+    def set_result(self, result):
+        self.result = result
 
     def ready_for_result(self):
         return self.all_proc_submitted and self.active_count == 0 and len(self.pending_accumulation) < 2
@@ -214,6 +230,7 @@ class DynMapRedTask(abc.ABC):
     checkpoint: bool = False
     final: bool = False
     attempt_number: int = 1
+    priority_constant: int = 0
 
     def __post_init__(self) -> None:
         self._result_file = None
@@ -226,10 +243,6 @@ class DynMapRedTask(abc.ABC):
             )
 
         self.checkpoint = self.manager.should_checkpoint(self)
-        if self.checkpoint:
-            self.checkpoint_distance = 0
-            self.set_priority(10 * len(self.manager.processors) + self.manager.processors[self.processor_name].rank)
-        self.set_priority(self.manager.processors[self.processor_name].rank)
 
         self.processor = self.manager.processors[self.processor_name]
         self.dataset = self.processor.dataset(self.dataset_name)
@@ -241,6 +254,12 @@ class DynMapRedTask(abc.ABC):
             self.input_tasks,
             self.result_file,
         )
+
+        if self.checkpoint:
+            self.checkpoint_distance = 0
+            self.set_priority(priority_separation * priority_separation + self.dataset.priority)
+        else:
+            self.set_priority(self.dataset.priority)
 
         if self.manager.environment:
             self.vine_task.add_environment(self.manager.environment)
@@ -318,9 +337,7 @@ class DynMapRedTask(abc.ABC):
         pass
 
     @abc.abstractmethod
-    def resubmit_args_on_exhaustion(
-        self: Self, attempt_number: int
-    ) -> list[dict] | None:
+    def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
         return None
 
     def cleanup(self):
@@ -348,8 +365,6 @@ class DynMapRedTask(abc.ABC):
         )
 
     def create_new_attempts(self):
-        if not self.completed():
-            raise RuntimeError("task has not completed, so it cannot be resubmitted.")
         if self.attempt_number >= self.manager.max_task_retries:
             print(self.description())
             print(self.std_output)
@@ -391,14 +406,15 @@ class DynMapRedProcessingTask(DynMapRedTask):
             manager.source_postprocess_args,
         )
 
+        for k, v in manager.resources_processing.items():
+            getattr(task, f"set_{k}")(v)
+
         return task
 
     def description(self):
         return f"processing#{self.processor_name}#{self.dataset_name}"
 
-    def resubmit_args_on_exhaustion(
-        self: Self, attempt_number: int
-    ) -> list[dict] | None:
+    def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
         return None
 
 
@@ -406,7 +422,7 @@ class DynMapRedFetchTask(DynMapRedTask):
     def __post_init__(self):
         self.checkpoint = True
         super().__post_init__()
-        self.set_priority(100 * len(self.manager.processors) + self.manager.processors[self.processor_name].rank)
+        self.set_priority(priority_separation ** 3 + self.dataset.priority)
 
     def create_task(
         self: Self,
@@ -425,9 +441,10 @@ class DynMapRedFetchTask(DynMapRedTask):
         # task = vine.Task("ln -s task_input.p task_output.p")
         # task = vine.Task("cp task_input.p task_output.p")
 
-        task = vine.Task("echo do nothing")
-        task.add_input(target.result_file, "task_input.p", strict_input=True)
-        task.add_output(result_file, "task_input.p")  # not a bug, we simply get the file from the input.
+        task = vine.Task("ln -L task_input.p task_output.p")
+        task.add_input(
+            target.result_file, "task_input.p"  # , strict_input=(self.attempt_number == 1)
+        )
         task.set_cores(1)
 
         return task
@@ -435,9 +452,7 @@ class DynMapRedFetchTask(DynMapRedTask):
     def description(self):
         return f"fetching#{self.processor_name}#{self.dataset_name}"
 
-    def resubmit_args_on_exhaustion(
-        self: Self, attempt_number: int
-    ) -> list[dict] | None:
+    def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
         # resubmit with the same args
         return [{}]
 
@@ -468,11 +483,12 @@ class DynMapRedAccumTask(DynMapRedTask):
 
         task.set_category(f"accumulating#{processor.name}#{dataset.name}")
 
+        for k, v in manager.resources_accumualting.items():
+            getattr(task, f"set_{k}")(v)
+
         return task
 
-    def resubmit_args_on_exhaustion(
-        self: Self, attempt_number: int
-    ) -> list[dict] | None:
+    def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
         n = len(self.input_tasks)
         if n < 4 or self.manager.accum_size < 2:
             return None
@@ -516,6 +532,7 @@ class DynMapReduce:
     resources_accumualting: Optional[Mapping[str, float]] = None
     resources_processing: Optional[Mapping[str, float]] = None
     results_directory: str = "results"
+    result_postprocess: Optional[Callable[[H], Any]] = None
     source_postprocess: Callable[[D], P] = identity_source_conector
     source_postprocess_args: Optional[Mapping[str, Any]] = None
     source_preprocess: Callable[[Any], D] = identity_source_preprocess
@@ -535,19 +552,23 @@ class DynMapReduce:
         self._tasks_active = 0
 
         if isinstance(self.processors, list):
-            nps = len(self.processors)
+            nps = (len(self.processors) + 1) * priority_separation
             self.processors = {
-                name(p): ProcCounts(name(p), p, rank=nps - i)
+                name(p): ProcCounts(name(p), p, priority=nps - i * priority_separation)
                 for i, p in enumerate(self.processors)
             }
         elif isinstance(self.processors, dict):
-            nps = len(self.processors)
+            nps = (len(self.processors) + 1) * priority_separation
             self.processors = {
-                n: ProcCounts(n, p, rank=nps - i)
+                n: ProcCounts(n, p, priority=nps - i * priority_separation)
                 for i, (n, p) in enumerate(self.processors.items())
             }
         else:
-            self.processors = {name(self.processors): ProcCounts(name(self.processors), self.processors, rank=0)}
+            self.processors = {
+                name(self.processors): ProcCounts(
+                    name(self.processors), self.processors, priority=priority_separation
+                )
+            }
 
         if not self.resources_processing:
             self.resources_processing = {"cores": 1}
@@ -560,6 +581,7 @@ class DynMapReduce:
         self.manager.tune("hungry-minimum", 100)
         self.manager.tune("prefer-dispatch", 1)
         self.manager.tune("temp-replica-count", self.file_replication)
+        self.manager.tune("immediate-recovery", 1)
 
         self._extra_files_map = {
             "dynmapred.py": self.manager.declare_file(__file__, cache=True)
@@ -575,8 +597,8 @@ class DynMapReduce:
         self._wait_timeout = 5
         self._graph_file = None
         if self.graph_output_file:
-            self._graph_file = open(f"{self.manager.logging_directory}/graph.csv", "w")
-            self._graph_file.write("id,category,checkpoint,exec_time,cum_time,inputs\n")
+            self._graph_file = open(f"{self.manager.logging_directory}/graph.csv", "w", buffering=1)
+            self._graph_file.write("id,category,checkpoint,final,exec_time,cum_time,inputs\n")
 
         self._set_env()
 
@@ -602,9 +624,11 @@ class DynMapReduce:
         self.manager.install_library(libtask)
         self._env = envf
 
-
     def _set_resources(self, data):
         for ds in data:
+            self.manager.set_category_mode(f"processing#{ds}", "max")
+            self.manager.set_category_mode(f"accumulating#{ds}", "max")
+
             self.manager.set_category_resources_max(
                 f"processing#{ds}", self.resources_processing
             )
@@ -617,45 +641,60 @@ class DynMapReduce:
         if ds.ready_for_result():
             self._add_fetch_task(task, final=True)
         else:
-            self._add_accum_tasks(ds)
+            self._add_accum_task(ds)
+
+    def _set_result(self, target):
+        ds = target.dataset
+        ds.set_final(target)
+        with lz4.frame.open(ds.output_file.source(), "rb") as fp:
+            r = cloudpickle.load(fp)
+            if self.result_postprocess:
+                r = self.result_postprocess(r)
+            ds.set_result(r)
+            print(f"{target.processor_name}#{target.dataset_name} completed!")
 
     def _add_fetch_task(self, target, final):
-        if target.is_final():
-            return
-
-        ds = target.dataset
-        if final and target.is_checkpoint():
-            ds.set_final(target)
-            return
+        # if final and target.is_checkpoint():
+        #     target.final = True
+        #     try:
+        #         shutil.copy2(
+        #             target.result_file.source(),
+        #             f"{self.results_directory}/{target.processor_name}/{target.dataset_name}",
+        #         )
+        #     except shutil.SameFileError:
+        #         pass
 
         t = DynMapRedFetchTask(self, target.processor_name, target.dataset_name, None, [target], final=final)
         self.submit(t)
-        ds.set_final(t)
 
-    def _add_accum_tasks(self, dataset):
-        force = False
+    def _add_accum_task(self, ds):
+        final = False
         accum_size = max(2, self.accumulation_size)
-        if dataset.all_proc_submitted and dataset.active_count == 0:
-            accum_size = min(accum_size, len(dataset.pending_accumulation))
-            force = True
 
-        if not force and len(dataset.pending_accumulation) < 2*accum_size - accum_size/2:
+        if ds.all_proc_submitted and ds.active_count == 0:
+            if len(ds.pending_accumulation) <= accum_size:
+                final = True
+        elif len(ds.pending_accumulation) < 2 * accum_size - accum_size / 2:
             return
 
-        dataset.pending_accumulation.sort(key=lambda t: len(t.input_tasks) if t.input_tasks else 0)
+        ds.pending_accumulation.sort(key=lambda t: len(t.input_tasks) if t.input_tasks else 0)
 
-        while len(dataset.pending_accumulation) >= accum_size:
-            heads, tails = (
-                dataset.pending_accumulation[:accum_size],
-                dataset.pending_accumulation[accum_size:],
-            )
+        heads, ds.pending_accumulation = (
+            ds.pending_accumulation[:accum_size],
+            ds.pending_accumulation[accum_size:],
+        )
 
-            dataset.pending_accumulation = tails
-            first = heads[0]
-            t = DynMapRedAccumTask(
-                self, first.processor_name, first.dataset_name, None, heads, checkpoint=self.checkpoint_accumulations
-            )
-            self.submit(t)
+        first = heads[0]
+        t = DynMapRedAccumTask(
+            self,
+            first.processor_name,
+            first.dataset_name,
+            None,
+            heads,
+            checkpoint=self.checkpoint_accumulations,
+            final=final,
+        )
+        self.submit(t)
 
     @property
     def all_proc_submitted(self):
@@ -669,6 +708,8 @@ class DynMapReduce:
         return False
 
     def resubmit(self, t):
+        print(f"resubmitting task {t.description()} {t.datum}\n{t.std_output}")
+
         self.manager.undeclare_file(t.result_file)
 
         new_attempts = t.create_new_attempts()
@@ -686,7 +727,6 @@ class DynMapReduce:
             t = self._id_to_task.pop(tv.id)
             self._wait_timeout = 0
             self._tasks_active -= 1
-            t.dataset.add_completed(t)
 
             if t.successful():
                 self.write_graph_file(t)
@@ -719,7 +759,7 @@ class DynMapReduce:
             return
 
         self._graph_file.write(
-            f"{t.id},{t.description()},{t.checkpoint},"
+            f"{t.id},{t.description()},{t.checkpoint},{t.final},"
             f"{t.exec_time},{t.cumulative_exec_time},"
             f"{':'.join(str(t.id) for t in t.input_tasks or [])}\n"
         )
@@ -733,6 +773,7 @@ class DynMapReduce:
             p.all_proc_submitted = False
 
             for ds_name, info in datasets.items():
+                p.dataset(ds_name).all_proc_submitted = False
                 max = self.max_sources_per_dataset
                 for datum in info:
                     gen_ds = self.source_preprocess(datum, *args)
@@ -781,7 +822,11 @@ class DynMapReduce:
                     if not t.is_checkpoint() and self.should_checkpoint(t):
                         self._add_fetch_task(t, final=False)
                     else:
-                        self._accum_or_fetch(t)
+                        t.dataset.add_completed(t)
+                        if t.is_final():
+                            self._set_result(t)
+                        else:
+                            self._accum_or_fetch(t)
                 elif not self.resubmit(t):
                     raise RuntimeError(
                         f"task {t.datum} could not be completed\n{t.std_output}\n---\n{t.output}"
@@ -798,9 +843,8 @@ class DynMapReduce:
         for p in self.processors.values():
             results_proc = {}
             for ds_name in data:
-                f = p.dataset(ds_name).output_file
-                with lz4.frame.open(f"{f.source()}", "rb") as fp:
-                    results_proc[ds_name] = cloudpickle.load(fp)
+                r = p.dataset(ds_name).result
+                results_proc[ds_name] = r
             results[p.name] = results_proc
 
         return results
