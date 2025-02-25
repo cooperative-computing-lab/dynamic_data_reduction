@@ -196,12 +196,12 @@ class DatasetCounts:
     def inc_submitted(self, n=1):
         self.active_count += n
 
-    def add_completed(self, manager, t):
+    def add_completed(self, t):
         self.active_count -= 1
 
         if t.successful():
-            if not t.is_checkpoint() and manager.should_checkpoint(t):
-                manager._add_fetch_task(t, final=False)
+            if not t.is_checkpoint() and t.manager.should_checkpoint(t):
+                t.manager._add_fetch_task(t, final=False)
                 return
 
             self.done_count += 1
@@ -262,9 +262,11 @@ class DynMapRedTask(abc.ABC):
 
         if self.checkpoint:
             self.checkpoint_distance = 0
-            self.set_priority(priority_separation * priority_separation + self.dataset.priority)
-        else:
-            self.set_priority(self.dataset.priority)
+            self.priority_constant += 1
+
+        self.set_priority(
+            priority_separation ** self.priority_constant + self.dataset.priority
+        )
 
         if self.manager.environment:
             self.vine_task.add_environment(self.manager.environment)
@@ -426,8 +428,8 @@ class DynMapRedProcessingTask(DynMapRedTask):
 class DynMapRedFetchTask(DynMapRedTask):
     def __post_init__(self):
         self.checkpoint = True
+        self.priority_constant = 3
         super().__post_init__()
-        self.set_priority(priority_separation ** 3 + self.dataset.priority)
 
     def create_task(
         self: Self,
@@ -463,6 +465,11 @@ class DynMapRedFetchTask(DynMapRedTask):
 
 
 class DynMapRedAccumTask(DynMapRedTask):
+    def __post_init__(self):
+        self.checkpoint = True
+        self.priority_constant = 2
+        super().__post_init__()
+
     def create_task(
         self: Self,
         manager: vine.Manager,
@@ -814,7 +821,7 @@ class DynMapReduce:
             t = self.wait(5)
             if t:
                 if t.successful():
-                    t.dataset.add_completed(self, t)
+                    t.dataset.add_completed(t)
                     if t.is_final():
                         self._set_result(t)
                     else:
