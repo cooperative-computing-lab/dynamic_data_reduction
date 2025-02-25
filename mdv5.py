@@ -7,6 +7,7 @@ import cloudpickle
 import json
 import pathlib
 import pprint
+import math
 
 
 def source_preprocess(file_info, **source_args):
@@ -15,16 +16,14 @@ def source_preprocess(file_info, **source_args):
     file_chunk_size = source_args.get("file_step_size", 3000000)
     file_chunk_size = source_args.get("file_step_size", 50000)
     file_chunk_size = source_args.get("file_step_size", 25000)
-    file_chunk_size = source_args.get("file_step_size", 5000)
-    file_chunk_size = source_args.get("file_step_size", 10000)
-
     file_chunk_size = source_args.get("file_step_size", 1000)
+    file_chunk_size = source_args.get("file_step_size", 10000)
+    file_chunk_size = source_args.get("file_step_size", 5000)
 
     dataset = file_info["metadata"]["dataset"]
     if dataset.startswith("ttboosted"):
         file_chunk_size = source_args.get("file_step_size", 1000)
-
-    if "qcd" in dataset:
+    elif "qcd" in dataset:
         file_chunk_size = source_args.get("file_step_size", 1000)
 
     source_root = "root://hactar01.crc.nd.edu//store/user/cmoore24/samples/"
@@ -42,6 +41,7 @@ def source_preprocess(file_info, **source_args):
             "object_path": "Events",
             "entry_start": start,
             "entry_stop": end,
+            "num_entries": end - start,
             "metadata": file_info["metadata"],
         }
         yield d
@@ -52,19 +52,48 @@ def source_postprocess(chunk_info, **source_args):
     from coffea.nanoevents import NanoEventsFactory, PFNanoAODSchema
     import os
 
+    def step_lengths(n, c):
+        c = max(1, c)
+        n = max(1, n)
+
+        # s is the base number of events per CPU
+        s = n // c
+
+        # r is how many CPUs need to handle s+1 events
+        r = n % c
+
+        return [s + 1] * r + [s] * (c - r)
+
     cores = source_args.get("cores", int(os.environ.get("CORES", 1)))
+    cores_factor = 2
+
+    num_entries = chunk_info["num_entries"]
+    step_size = max(1, math.floor(num_entries / (cores_factor * cores)))
+    step_size = math.ceil(num_entries / math.ceil(num_entries / step_size))
+
+    start = chunk_info["entry_start"]
+    end = chunk_info["entry_stop"]
+    steps = [start]
+
+    for step in step_lengths(num_entries, cores):
+        if step < 1:
+            break
+        start += step
+        steps.append(start)
+    assert start == end
 
     d = {
         chunk_info["file"]: {
             "object_path": chunk_info["object_path"],
             "metadata": chunk_info["metadata"],
+            "steps": steps
         }
     }
 
     events = NanoEventsFactory.from_root(
         d,
         schemaclass=PFNanoAODSchema,
-        uproot_options={"timeout": 600, "steps_per_file": cores},
+        uproot_options={"timeout": 600, "steps_size": cores * 2},
         metadata=dict(chunk_info["metadata"]),
     )
 
@@ -326,8 +355,8 @@ def coffea_preprocess_to_dynmapred(data):
     for (i, (k, v)) in enumerate(data.items()):
         # if k.startswith("ttboosted"):
         #     continue
-        # if i > 10:
-        #     break
+        if i > 0:
+            break
 
         data_b[k] = []
         v_b = dict(v)
@@ -343,8 +372,8 @@ def coffea_preprocess_to_dynmapred(data):
             d["metadata"]["dataset"] = k
 
             data_b[k].append(d)
-            # if j > 1:
-            #     break
+            if j > 0:
+                break
     return data_b
 
 
@@ -356,7 +385,7 @@ if __name__ == "__main__":
 
     mgr = vine.Manager(port=[9123, 9129], name="btovar-dynmapred", staging_path="/tmp/btovar")
     mgr.tune("hungry-minimum", 1)
-    mgr.enable_monitoring()
+    mgr.enable_monitoring(watchdog=False)
 
     dmr = DynMapReduce(
         mgr,
@@ -375,7 +404,7 @@ if __name__ == "__main__":
         # x509_proxy="x509up_u196886",
         checkpoint_fn=checkpoint_fn,
         # extra_files=["mdv3_fns.py"],
-        resources_processing={"cores": 1},
+        resources_processing={"cores": 24},
         resources_accumualting={"cores": 1},
     )
 

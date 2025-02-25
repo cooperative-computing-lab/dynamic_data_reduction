@@ -31,14 +31,23 @@ def wrap_processing(
     datum,
     processor_args,
     source_postprocess_args,
-    local_executor="threads",
+    # local_executor="threads",
+    local_executor="processes",
     local_executor_args=None,
 ):
     import os
+    import dask
+    from concurrent.futures import ThreadPoolExecutor
+    # from distributed import Client, LocalCluster
 
     if not local_executor_args:
         local_executor_args = {}
-    local_executor_args.setdefault("nthreads", os.environ.get("CORES", 1))
+
+    local_executor_args.setdefault("scheduler", local_executor)
+    local_executor_args.setdefault("num_workers", 2*int(os.environ.get("CORES", 1)))
+
+    # cluster = LocalCluster(n_workers=local_executor_args["num_workers"])
+    # client = Client(cluster)
 
     if processor_args is None:
         processor_args = {}
@@ -48,11 +57,18 @@ def wrap_processing(
 
     datum_post = source_postprocess(datum, **source_postprocess_args)
 
-    result = processor(datum_post, **processor_args).compute(
-        executor=local_executor, **local_executor_args
-    )
+    # result = processor(datum_post, **processor_args).compute()
+    # result = processor(datum_post, **processor_args).compute(
+    #     **local_executor_args
+    # )
+    with dask.config.set(pool=ThreadPoolExecutor(local_executor_args["num_workers"])):
+        result = processor(datum_post, **processor_args).compute()
+
     with lz4.frame.open("task_output.p", "wb") as fp:
         cloudpickle.dump(result, fp)
+
+    # client.close()
+    # cluster.close()
 
 
 def accumulate(accumulator, result_names, accumulator_args=None, to_file=True):
