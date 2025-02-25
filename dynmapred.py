@@ -37,13 +37,12 @@ def wrap_processing(
 ):
     import os
     import dask
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
     # from distributed import Client, LocalCluster
 
     if not local_executor_args:
         local_executor_args = {}
 
-    local_executor_args.setdefault("scheduler", local_executor)
     local_executor_args.setdefault("num_workers", 2*int(os.environ.get("CORES", 1)))
 
     # cluster = LocalCluster(n_workers=local_executor_args["num_workers"])
@@ -57,18 +56,32 @@ def wrap_processing(
 
     datum_post = source_postprocess(datum, **source_postprocess_args)
 
-    # result = processor(datum_post, **processor_args).compute()
-    # result = processor(datum_post, **processor_args).compute(
-    #     **local_executor_args
-    # )
-    with dask.config.set(pool=ThreadPoolExecutor(local_executor_args["num_workers"])):
-        result = processor(datum_post, **processor_args).compute()
+    # Configure the appropriate executor based on the scheduler type
+    num_workers = local_executor_args["num_workers"]
+    scheduler = local_executor_args["scheduler"]
+
+    # Only create a pool if we have workers to use
+    pool = None
+
+    if scheduler == "threads":
+        pool = ThreadPoolExecutor(max_workers=num_workers)
+    elif scheduler == "processes":
+        pool = ProcessPoolExecutor(max_workers=num_workers)
+    else:
+        local_executor_args.setdefault("scheduler", local_executor)
+
+    # Use the configured pool with Dask if available
+    if pool:
+        with dask.config.set(pool=pool):
+            result = processor(datum_post, **processor_args).compute()
+        # Make sure to close the pool to free resources
+        pool.shutdown()
+    else:
+        # If no pool is available, just compute without a specific pool
+        result = processor(datum_post, **processor_args).compute(**local_executor_args)
 
     with lz4.frame.open("task_output.p", "wb") as fp:
         cloudpickle.dump(result, fp)
-
-    # client.close()
-    # cluster.close()
 
 
 def accumulate(accumulator, result_names, accumulator_args=None, to_file=True):
