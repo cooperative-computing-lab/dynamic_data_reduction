@@ -31,22 +31,16 @@ def wrap_processing(
     datum,
     processor_args,
     source_postprocess_args,
-    # local_executor="threads",
-    local_executor="processes",
     local_executor_args=None,
 ):
     import os
     import dask
-    from concurrent.futures import ThreadPoolExecutor, ProcessPoolExecutor
-    # from distributed import Client, LocalCluster
+    from distributed import Client, LocalCluster
 
     if not local_executor_args:
         local_executor_args = {}
 
     local_executor_args.setdefault("num_workers", 2*int(os.environ.get("CORES", 1)))
-
-    # cluster = LocalCluster(n_workers=local_executor_args["num_workers"])
-    # client = Client(cluster)
 
     if processor_args is None:
         processor_args = {}
@@ -56,29 +50,31 @@ def wrap_processing(
 
     datum_post = source_postprocess(datum, **source_postprocess_args)
 
-    # Configure the appropriate executor based on the scheduler type
+    # Configure based on the scheduler type
     num_workers = local_executor_args["num_workers"]
-    scheduler = local_executor_args["scheduler"]
-
-    # Only create a pool if we have workers to use
-    pool = None
-
-    if scheduler == "threads":
-        pool = ThreadPoolExecutor(max_workers=num_workers)
-    elif scheduler == "processes":
-        pool = ProcessPoolExecutor(max_workers=num_workers)
+    
+    # Process the data through the processor
+    to_maybe_compute = processor(datum_post, **processor_args)
+    
+    # Check if the result is a Dask object that needs to be computed
+    is_dask_object = hasattr(to_maybe_compute, 'compute')
+    if is_dask_object:
+        # Compute the result based on the scheduler type
+        if num_workers and num_workers > 0:
+            # Use distributed.Client for parallel processing
+            cluster = LocalCluster(n_workers=num_workers)
+            client = Client(cluster)
+            try:
+                result = client.compute(to_maybe_compute).result()
+            finally:
+                client.close()
+                cluster.close()
+        else:
+            # Default case - use dask's default scheduler
+            result = to_maybe_compute.compute(**local_executor_args)
     else:
-        local_executor_args.setdefault("scheduler", local_executor)
-
-    # Use the configured pool with Dask if available
-    if pool:
-        with dask.config.set(pool=pool):
-            result = processor(datum_post, **processor_args).compute()
-        # Make sure to close the pool to free resources
-        pool.shutdown()
-    else:
-        # If no pool is available, just compute without a specific pool
-        result = processor(datum_post, **processor_args).compute(**local_executor_args)
+        # If not a Dask object, just use the result directly
+        result = to_maybe_compute
 
     with lz4.frame.open("task_output.p", "wb") as fp:
         cloudpickle.dump(result, fp)
@@ -120,7 +116,6 @@ def accumulate_tree(
     accumulator_n_args=2,
     to_file=True,
     from_files=True,
-    local_executor="threads",
     local_executor_args=None,
     accumulator_args=None,
 ):
@@ -130,7 +125,9 @@ def accumulate_tree(
 
     if not local_executor_args:
         local_executor_args = {}
-    local_executor_args.setdefault("nthreads", os.environ.get("CORES", 1))
+
+    local_executor_args.setdefault("scheduler", "threads")
+    local_executor_args.setdefault("num_workers", os.environ.get("CORES", 1))
 
     if accumulator_args is None:
         accumulator_args = {}
