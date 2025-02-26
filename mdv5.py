@@ -155,7 +155,8 @@ def make_processor():
             axis=1,
         )
 
-        fatjet_limit = 450  # 400
+        fatjet_limit_lower = 450    # 400
+        fatjet_limit_upper = 900   # 1200
 
         # onemuon = (nmuons == 1) & (nelectrons == 0) & (ntaus == 0)
         nolepton = (nmuons == 0) & (nelectrons == 0) & (ntaus == 0)
@@ -179,8 +180,8 @@ def make_processor():
             events["GenMatch_Mask"] = higgs_jets
 
             fatjetSelect = (
-                (events.FatJet.pt > fatjet_limit)
-                # & (events.FatJet.pt < 1200)
+                (events.FatJet.pt > fatjet_limit_lower)
+                & (events.FatJet.pt < fatjet_limit_upper)
                 & (abs(events.FatJet.eta) < 2.4)
                 & (events.FatJet.msoftdrop > 40)
                 & (events.FatJet.msoftdrop < 200)
@@ -199,8 +200,8 @@ def make_processor():
             events["GenMatch_Mask"] = w_jets
 
             fatjetSelect = (
-                (events.FatJet.pt > fatjet_limit)
-                # & (events.FatJet.pt < 1200)
+                (events.FatJet.pt > fatjet_limit_lower)
+                & (events.FatJet.pt < fatjet_limit_upper)
                 & (abs(events.FatJet.eta) < 2.4)
                 & (events.FatJet.msoftdrop > 40)
                 & (events.FatJet.msoftdrop < 200)
@@ -219,7 +220,8 @@ def make_processor():
             events["GenMatch_Mask"] = z_jets
 
             fatjetSelect = (
-                (events.FatJet.pt > fatjet_limit)
+                (events.FatJet.pt > fatjet_limit_lower)
+                & (events.FatJet.pt < fatjet_limit_upper)
                 & (abs(events.FatJet.eta) < 2.4)
                 & (events.FatJet.msoftdrop > 40)
                 & (events.FatJet.msoftdrop < 200)
@@ -238,7 +240,8 @@ def make_processor():
             events["GenMatch_Mask"] = wz_jets
 
             fatjetSelect = (
-                (events.FatJet.pt > fatjet_limit)
+                (events.FatJet.pt > fatjet_limit_lower)
+                & (events.FatJet.pt < fatjet_limit_upper)
                 & (abs(events.FatJet.eta) < 2.4)
                 & (events.FatJet.msoftdrop > 40)
                 & (events.FatJet.msoftdrop < 200)
@@ -249,7 +252,8 @@ def make_processor():
         else:
             print("background")
             fatjetSelect = (
-                (events.FatJet.pt > fatjet_limit)
+                (events.FatJet.pt > fatjet_limit_lower)
+                & (events.FatJet.pt < fatjet_limit_upper)
                 & (abs(events.FatJet.eta) < 2.4)
                 & (events.FatJet.msoftdrop > 40)
                 & (events.FatJet.msoftdrop < 200)
@@ -355,8 +359,8 @@ def coffea_preprocess_to_dynmapred(data):
     for (i, (k, v)) in enumerate(data.items()):
         # if k.startswith("ttboosted"):
         #     continue
-        if i > 0:
-            break
+        # if i > 0:
+        #     break
 
         data_b[k] = []
         v_b = dict(v)
@@ -372,8 +376,8 @@ def coffea_preprocess_to_dynmapred(data):
             d["metadata"]["dataset"] = k
 
             data_b[k].append(d)
-            if j > 0:
-                break
+            # if j > 0:
+            #     break
     return data_b
 
 
@@ -404,7 +408,7 @@ if __name__ == "__main__":
         # x509_proxy="x509up_u196886",
         checkpoint_fn=checkpoint_fn,
         # extra_files=["mdv3_fns.py"],
-        resources_processing={"cores": 24},
+        resources_processing={"cores": 1},
         resources_accumualting={"cores": 1},
     )
 

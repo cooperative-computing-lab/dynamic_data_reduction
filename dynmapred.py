@@ -26,21 +26,22 @@ H = TypeVar("H")
 
 priority_separation = 1_000_000
 
+
 # Define a custom ProcessPoolExecutor that uses cloudpickle
 class CloudpickleProcessPoolExecutor(concurrent.futures.ProcessPoolExecutor):
     def __init__(self, *args, **kwargs):
-        self._mp_context = mp.get_context('spawn')  # Use spawn for better compatibility
+        self._mp_context = mp.get_context("spawn")  # Use spawn for better compatibility
         super().__init__(*args, **kwargs, mp_context=self._mp_context)
-        
+
     def submit(self, fn, *args, **kwargs):
         # Cloudpickle the function and arguments
         fn_dumps = cloudpickle.dumps((fn, args, kwargs))
-        
+
         # Define a wrapper function that unpickles and executes
         def _process_worker(serialized_data):
             fn, args, kwargs = cloudpickle.loads(serialized_data)
             return fn(*args, **kwargs)
-        
+
         # Submit the wrapper with the serialized data
         return super().submit(_process_worker, fn_dumps)
 
@@ -56,12 +57,11 @@ def wrap_processing(
     import os
     import dask
     import warnings
-    import multiprocessing as mp
 
     if not local_executor_args:
         local_executor_args = {}
 
-    local_executor_args.setdefault("num_workers", 2*int(os.environ.get("CORES", 1)))
+    local_executor_args.setdefault("num_workers", 2 * int(os.environ.get("CORES", 1)))
     scheduler = local_executor_args.get("scheduler", "default")
 
     if processor_args is None:
@@ -74,22 +74,26 @@ def wrap_processing(
 
     # Configure based on the scheduler type
     num_workers = local_executor_args["num_workers"]
-    
+
     # Process the data through the processor
     to_maybe_compute = processor(datum_post, **processor_args)
-    
+
     # Check if the result is a Dask object that needs to be computed
-    is_dask_object = hasattr(to_maybe_compute, 'compute')
+    is_dask_object = hasattr(to_maybe_compute, "compute")
     if is_dask_object:
         # Compute the result based on the scheduler type
         if scheduler == "cloudpickle_processes" and num_workers > 0:
             # Use our custom ProcessPoolExecutor with cloudpickle
             try:
-                with CloudpickleProcessPoolExecutor(max_workers=num_workers) as executor:
+                with CloudpickleProcessPoolExecutor(
+                    max_workers=num_workers
+                ) as executor:
                     with dask.config.set(pool=executor):
                         result = to_maybe_compute.compute()
             except Exception as e:
-                warnings.warn(f"CloudpickleProcessPoolExecutor failed: {str(e)}. Falling back to default scheduler.")
+                warnings.warn(
+                    f"CloudpickleProcessPoolExecutor failed: {str(e)}. Falling back to default scheduler."
+                )
                 result = to_maybe_compute.compute()
         else:
             # Default case - use dask's default scheduler
@@ -216,7 +220,9 @@ class ProcCounts:
         self.all_proc_submitted = False
 
     def dataset(self, name):
-        return self._datasets.setdefault(name, DatasetCounts(name, self.priority - len(self._datasets)))
+        return self._datasets.setdefault(
+            name, DatasetCounts(name, self.priority - len(self._datasets))
+        )
 
     def inc_submitted(self, dataset):
         self.datasets(dataset).inc_submitted()
@@ -267,7 +273,11 @@ class DatasetCounts:
         self.result = result
 
     def ready_for_result(self):
-        return self.all_proc_submitted and self.active_count == 0 and len(self.pending_accumulation) < 2
+        return (
+            self.all_proc_submitted
+            and self.active_count == 0
+            and len(self.pending_accumulation) < 2
+        )
 
 
 @dataclasses.dataclass
@@ -313,7 +323,7 @@ class DynMapRedTask(abc.ABC):
             self.priority_constant += 1
 
         self.set_priority(
-            priority_separation ** self.priority_constant + self.dataset.priority
+            priority_separation**self.priority_constant + self.dataset.priority
         )
 
         if self.manager.environment:
@@ -498,7 +508,8 @@ class DynMapRedFetchTask(DynMapRedTask):
 
         task = vine.Task("ln -L task_input.p task_output.p")
         task.add_input(
-            target.result_file, "task_input.p"  # , strict_input=(self.attempt_number == 1)
+            target.result_file,
+            "task_input.p",  # , strict_input=(self.attempt_number == 1)
         )
         task.set_cores(1)
 
@@ -575,7 +586,9 @@ class DynMapRedAccumTask(DynMapRedTask):
 @dataclasses.dataclass
 class DynMapReduce:
     manager: vine.Manager
-    processors: Callable[[P], H] | List[Callable[[P], H]] | dict[str, [Callable[[P], H]]]
+    processors: (
+        Callable[[P], H] | List[Callable[[P], H]] | dict[str, [Callable[[P], H]]]
+    )
     accumulation_size: int = 10
     accumulator: Callable[[H, H], H] = default_accumualtor
     accumulator_args: Optional[Mapping[str, Any]] = None
@@ -606,7 +619,7 @@ class DynMapReduce:
                 n = p.__name__
             except AttributeError:
                 n = str(p)
-            return re.sub(r'\W', '_', n)
+            return re.sub(r"\W", "_", n)
 
         self._id_to_task = {}
         self._tasks_active = 0
@@ -648,17 +661,25 @@ class DynMapReduce:
         }
 
         if self.x509_proxy:
-            self._extra_files_map["proxy.pem"] = self.manager.declare_file(self.x509_proxy, cache=True)
+            self._extra_files_map["proxy.pem"] = self.manager.declare_file(
+                self.x509_proxy, cache=True
+            )
 
         if self.extra_files:
             for path in self.extra_files:
-                self._extra_files_map[os.path.basename(path)] = self.manager.declare_file(path, cache=True)
+                self._extra_files_map[os.path.basename(path)] = (
+                    self.manager.declare_file(path, cache=True)
+                )
 
         self._wait_timeout = 5
         self._graph_file = None
         if self.graph_output_file:
-            self._graph_file = open(f"{self.manager.logging_directory}/graph.csv", "w", buffering=1)
-            self._graph_file.write("id,category,checkpoint,final,exec_time,cum_time,inputs\n")
+            self._graph_file = open(
+                f"{self.manager.logging_directory}/graph.csv", "w", buffering=1
+            )
+            self._graph_file.write(
+                "id,category,checkpoint,final,exec_time,cum_time,inputs\n"
+            )
 
         self._set_env()
 
@@ -714,7 +735,14 @@ class DynMapReduce:
             print(f"{target.processor_name}#{target.dataset_name} completed!")
 
     def _add_fetch_task(self, target, final):
-        t = DynMapRedFetchTask(self, target.processor_name, target.dataset_name, None, [target], final=final)
+        t = DynMapRedFetchTask(
+            self,
+            target.processor_name,
+            target.dataset_name,
+            None,
+            [target],
+            final=final,
+        )
         self.submit(t)
 
     def _add_accum_task(self, ds):
@@ -727,7 +755,9 @@ class DynMapReduce:
         elif len(ds.pending_accumulation) < 2 * accum_size - accum_size / 2:
             return
 
-        ds.pending_accumulation.sort(key=lambda t: len(t.input_tasks) if t.input_tasks else 0)
+        ds.pending_accumulation.sort(
+            key=lambda t: len(t.input_tasks) if t.input_tasks else 0
+        )
 
         heads, ds.pending_accumulation = (
             ds.pending_accumulation[:accum_size],
