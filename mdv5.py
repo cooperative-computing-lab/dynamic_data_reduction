@@ -65,22 +65,25 @@ def source_postprocess(chunk_info, **source_args):
         return [s + 1] * r + [s] * (c - r)
 
     cores = source_args.get("cores", int(os.environ.get("CORES", 1)))
-    cores_factor = 2
+    cores_factor = 1
 
     num_entries = chunk_info["num_entries"]
-    step_size = max(1, math.floor(num_entries / (cores_factor * cores)))
-    step_size = math.ceil(num_entries / math.ceil(num_entries / step_size))
 
     start = chunk_info["entry_start"]
     end = chunk_info["entry_stop"]
     steps = [start]
 
-    for step in step_lengths(num_entries, cores):
+    for step in step_lengths(num_entries, cores * cores_factor):
         if step < 1:
             break
         start += step
         steps.append(start)
     assert start == end
+
+    chunk_info["metadata"]["cores"] = cores
+    chunk_info["metadata"]["cores_factor"] = cores_factor
+
+    steps = [chunk_info["entry_start"], chunk_info["entry_stop"]]
 
     d = {
         chunk_info["file"]: {
@@ -93,7 +96,7 @@ def source_postprocess(chunk_info, **source_args):
     events = NanoEventsFactory.from_root(
         d,
         schemaclass=PFNanoAODSchema,
-        uproot_options={"timeout": 600, "steps_size": cores * 2},
+        uproot_options={"timeout": 600},
         metadata=dict(chunk_info["metadata"]),
     )
 
@@ -106,24 +109,27 @@ def make_processor():
 
     def analysis(events):
         import awkward as ak
+        import dask_awkward as dak
         import fastjet
         import scipy
 
         dataset = events.metadata["dataset"]
+        cores = events.metadata["cores"]
+        cores_factor = events.metadata["cores_factor"]
         print(dataset)
 
         events["PFCands", "pt"] = events.PFCands.pt * events.PFCands.puppiWeight
 
-        cut_to_fix_softdrop = ak.num(events.FatJet.constituents.pf, axis=2) > 0
-        events = events[ak.all(cut_to_fix_softdrop, axis=1)]
+        cut_to_fix_softdrop = dak.num(events.FatJet.constituents.pf, axis=2) > 0
+        events = events[dak.all(cut_to_fix_softdrop, axis=1)]
 
-        trigger = ak.zeros_like(ak.firsts(events.FatJet.pt), dtype="bool")
+        trigger = dak.zeros_like(dak.firsts(events.FatJet.pt), dtype="bool")
         for t in triggers["2017"]:
             if t in events.HLT.fields:
                 trigger = trigger | events.HLT[t]
-        trigger = ak.fill_none(trigger, False)
+        trigger = dak.fill_none(trigger, False)
 
-        events["FatJet", "num_fatjets"] = ak.num(events.FatJet)
+        events["FatJet", "num_fatjets"] = dak.num(events.FatJet)
 
         goodmuon = (
             (events.Muon.pt > 10)
@@ -132,23 +138,23 @@ def make_processor():
             & events.Muon.looseId
         )
 
-        nmuons = ak.sum(goodmuon, axis=1)
+        nmuons = dak.sum(goodmuon, axis=1)
 
         goodelectron = (
             (events.Electron.pt > 10)
             & (abs(events.Electron.eta) < 2.5)
             & (events.Electron.cutBased >= 2)  # events.Electron.LOOSE
         )
-        nelectrons = ak.sum(goodelectron, axis=1)
+        nelectrons = dak.sum(goodelectron, axis=1)
 
-        ntaus = ak.sum(
+        ntaus = dak.sum(
             (
                 (events.Tau.pt > 20)
                 & (abs(events.Tau.eta) < 2.3)
                 & (events.Tau.rawIso < 5)
                 & (events.Tau.idDeepTau2017v2p1VSjet)
-                & ak.all(events.Tau.metric_table(events.Muon[goodmuon]) > 0.4, axis=2)
-                & ak.all(
+                & dak.all(events.Tau.metric_table(events.Muon[goodmuon]) > 0.4, axis=2)
+                & dak.all(
                     events.Tau.metric_table(events.Electron[goodelectron]) > 0.4, axis=2
                 )
             ),
@@ -163,7 +169,7 @@ def make_processor():
 
         region = nolepton  # Use this option to let less data through the cuts
 
-        events["btag_count"] = ak.sum(
+        events["btag_count"] = dak.sum(
             events.Jet[(events.Jet.pt > 20) & (abs(events.Jet.eta) < 2.4)].btagDeepFlavB
             > 0.3040,
             axis=1,
@@ -176,7 +182,7 @@ def make_processor():
                 & events.GenPart.hasFlags(["fromHardProcess", "isLastCopy"])
             ]
             parents = events.FatJet.nearest(genhiggs, threshold=0.2)
-            higgs_jets = ~ak.is_none(parents, axis=1)
+            higgs_jets = ~dak.is_none(parents, axis=1)
             events["GenMatch_Mask"] = higgs_jets
 
             fatjetSelect = (
@@ -196,7 +202,7 @@ def make_processor():
                 & events.GenPart.hasFlags(["fromHardProcess", "isLastCopy"])
             ]
             parents = events.FatJet.nearest(genw, threshold=0.2)
-            w_jets = ~ak.is_none(parents, axis=1)
+            w_jets = ~dak.is_none(parents, axis=1)
             events["GenMatch_Mask"] = w_jets
 
             fatjetSelect = (
@@ -216,7 +222,7 @@ def make_processor():
                 & events.GenPart.hasFlags(["fromHardProcess", "isLastCopy"])
             ]
             parents = events.FatJet.nearest(genz, threshold=0.2)
-            z_jets = ~ak.is_none(parents, axis=1)
+            z_jets = ~dak.is_none(parents, axis=1)
             events["GenMatch_Mask"] = z_jets
 
             fatjetSelect = (
@@ -236,7 +242,7 @@ def make_processor():
                 & events.GenPart.hasFlags(["fromHardProcess", "isLastCopy"])
             ]
             parents = events.FatJet.nearest(genwz, threshold=0.2)
-            wz_jets = ~ak.is_none(parents, axis=1)
+            wz_jets = ~dak.is_none(parents, axis=1)
             events["GenMatch_Mask"] = wz_jets
 
             fatjetSelect = (
@@ -262,12 +268,12 @@ def make_processor():
             )
 
         events["goodjets"] = events.FatJet[fatjetSelect]
-        mask = ~ak.is_none(ak.firsts(events.goodjets))
+        mask = ~dak.is_none(dak.firsts(events.goodjets))
         events = events[mask]
         ecfs = {}
 
         jetdef = fastjet.JetDefinition(fastjet.cambridge_algorithm, 0.8)
-        pf = ak.flatten(events.goodjets.constituents.pf, axis=1)
+        pf = dak.flatten(events.goodjets.constituents.pf, axis=1)
         cluster = fastjet.ClusterSequence(pf, jetdef)
         softdrop = cluster.exclusive_jets_softdrop_grooming()
         softdrop_cluster = fastjet.ClusterSequence(softdrop.constituents, jetdef)
@@ -277,13 +283,13 @@ def make_processor():
             for v in range(1, int(scipy.special.binom(n, 2)) + 1):
                 for b in range(5, 45, 5):
                     ecf_name = f"{v}e{n}^{b/10}"
-                    ecfs[ecf_name] = ak.unflatten(
+                    ecfs[ecf_name] = dak.unflatten(
                         softdrop_cluster.exclusive_jets_energy_correlator(
                             func="generic", npoint=n, angles=v, beta=b / 10
                         ),
-                        counts=ak.num(events.goodjets),
+                        counts=dak.num(events.goodjets),
                     )
-        events["ecfs"] = ak.zip(ecfs)
+        events["ecfs"] = dak.zip(ecfs)
 
         if (
             ("hgg" in dataset)
@@ -294,7 +300,7 @@ def make_processor():
             or ("zz" in dataset)
             or ("wz" in dataset)
         ):
-            skim = ak.zip(
+            skim = dak.zip(
                 {
                     # "Color_Ring": events.goodjets.color_ring,
                     "ECFs": events.ecfs,
@@ -309,7 +315,7 @@ def make_processor():
             )
         else:
 
-            skim = ak.zip(
+            skim = dak.zip(
                 {
                     # "Color_Ring": events.goodjets.color_ring,
                     "ECFs": events.ecfs,
@@ -321,6 +327,9 @@ def make_processor():
                 },
                 depth_limit=1,
             )
+
+        #skim.visualize(f'/scratch365/btovar/ecf_calculator_output/graph_cores_{cores}_factor_{cores_factor}_ntasks_{len(list(skim.keys()))}.svg')
+        skim.visualize(f'/scratch365/btovar/ecf_calculator_output/graph_cores_{cores}_factor_{cores_factor}_id_{id(skim)}.svg')
 
         return skim
 
@@ -378,6 +387,10 @@ def coffea_preprocess_to_dynmapred(data):
             data_b[k].append(d)
             # if j > 0:
             #     break
+            break
+        else:
+            continue
+        break
     return data_b
 
 
@@ -408,7 +421,7 @@ if __name__ == "__main__":
         # x509_proxy="x509up_u196886",
         checkpoint_fn=checkpoint_fn,
         # extra_files=["mdv3_fns.py"],
-        resources_processing={"cores": 1},
+        resources_processing={"cores": 8},
         resources_accumualting={"cores": 1},
     )
 

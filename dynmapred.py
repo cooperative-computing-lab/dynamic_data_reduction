@@ -61,7 +61,7 @@ def wrap_processing(
     if not local_executor_args:
         local_executor_args = {}
 
-    local_executor_args.setdefault("num_workers", 2 * int(os.environ.get("CORES", 1)))
+    local_executor_args.setdefault("num_workers", 1 + int(os.environ.get("CORES", 1)))
     scheduler = local_executor_args.get("scheduler", "default")
 
     if processor_args is None:
