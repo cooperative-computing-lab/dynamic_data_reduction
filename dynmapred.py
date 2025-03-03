@@ -29,21 +29,22 @@ priority_separation = 1_000_000
 
 # Define a custom ProcessPoolExecutor that uses cloudpickle
 class CloudpickleProcessPoolExecutor(concurrent.futures.ProcessPoolExecutor):
+    @staticmethod
+    def _cloudpickle_process_worker(serialized_data):
+        import cloudpickle
+        fn, args, kwargs = cloudpickle.loads(serialized_data)
+        return fn(*args, **kwargs)
+
     def __init__(self, *args, **kwargs):
-        self._mp_context = mp.get_context("spawn")  # Use spawn for better compatibility
+        self._mp_context = mp.get_context("fork")
         super().__init__(*args, **kwargs, mp_context=self._mp_context)
 
     def submit(self, fn, *args, **kwargs):
         # Cloudpickle the function and arguments
         fn_dumps = cloudpickle.dumps((fn, args, kwargs))
-
-        # Define a wrapper function that unpickles and executes
-        def _process_worker(serialized_data):
-            fn, args, kwargs = cloudpickle.loads(serialized_data)
-            return fn(*args, **kwargs)
-
+        
         # Submit the wrapper with the serialized data
-        return super().submit(_process_worker, fn_dumps)
+        return super().submit(CloudpickleProcessPoolExecutor._cloudpickle_process_worker, fn_dumps)
 
 
 def wrap_processing(
@@ -62,7 +63,8 @@ def wrap_processing(
         local_executor_args = {}
 
     local_executor_args.setdefault("num_workers", 1 + int(os.environ.get("CORES", 1)))
-    scheduler = local_executor_args.get("scheduler", "default")
+    scheduler = local_executor_args.get("scheduler", "cloudpickle_processes")
+    scheduler = "cloudpickle_processes"
 
     if processor_args is None:
         processor_args = {}
@@ -88,13 +90,21 @@ def wrap_processing(
                 with CloudpickleProcessPoolExecutor(
                     max_workers=num_workers
                 ) as executor:
-                    with dask.config.set(pool=executor):
-                        result = to_maybe_compute.compute()
+                    # result = dask.compute(to_maybe_compute,
+                    result = to_maybe_compute.compute(
+                                            scheduler="processes",
+                                            pool=executor,
+                                            optimize_graph=False,
+                                            num_workers=num_workers,
+                                            ave_width=4,
+                                            max_width=1,
+                                            max_height=None,
+                                            subgraphs=False,)
             except Exception as e:
                 warnings.warn(
                     f"CloudpickleProcessPoolExecutor failed: {str(e)}. Falling back to default scheduler."
                 )
-                result = to_maybe_compute.compute()
+                result = to_maybe_compute.compute(**local_exec_args)
         else:
             # Default case - use dask's default scheduler
             result = to_maybe_compute.compute(**local_executor_args)

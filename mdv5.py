@@ -19,15 +19,17 @@ def source_preprocess(file_info, **source_args):
     file_chunk_size = source_args.get("file_step_size", 1000)
     file_chunk_size = source_args.get("file_step_size", 10000)
     file_chunk_size = source_args.get("file_step_size", 5000)
+    file_chunk_size = source_args.get("file_step_size", 50000)
 
     dataset = file_info["metadata"]["dataset"]
-    if dataset.startswith("ttboosted"):
-        file_chunk_size = source_args.get("file_step_size", 1000)
-    elif "qcd" in dataset:
-        file_chunk_size = source_args.get("file_step_size", 1000)
+    # if dataset.startswith("ttboosted"):
+    #     file_chunk_size = source_args.get("file_step_size", 1000)
+    # elif "qcd" in dataset:
+    #     file_chunk_size = source_args.get("file_step_size", 1000)
 
     source_root = "root://hactar01.crc.nd.edu//store/user/cmoore24/samples/"
     source_vast = "/project01/ndcms/store/user/btovar/samples/"
+    source_vast = "/cephfs/ndcms/data/store/user/cmoore24/samples/"
 
     file_info["file"] = file_info["file"].replace(source_root, source_vast)
     num_entries = file_info["num_entries"]
@@ -278,6 +280,8 @@ def make_processor():
         softdrop = cluster.exclusive_jets_softdrop_grooming()
         softdrop_cluster = fastjet.ClusterSequence(softdrop.constituents, jetdef)
 
+        good_jets_counts = dak.num(events.goodjets)
+
         # (2, 3) -> (2, 6)
         for n in range(2, 6):
             for v in range(1, int(scipy.special.binom(n, 2)) + 1):
@@ -287,7 +291,7 @@ def make_processor():
                         softdrop_cluster.exclusive_jets_energy_correlator(
                             func="generic", npoint=n, angles=v, beta=b / 10
                         ),
-                        counts=dak.num(events.goodjets),
+                        counts=good_jets_counts,
                     )
         events["ecfs"] = dak.zip(ecfs)
 
