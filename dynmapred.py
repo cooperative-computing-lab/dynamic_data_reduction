@@ -232,15 +232,68 @@ class ProcCounts:
     priority: int = 0
 
     def __post_init__(self):
-        self.all_proc_submitted = False
         self._datasets = {}
 
-        self.total_size = 0
-        self.total_accums_done = 0
-        self.total_accums = 0
         for ds_name, ds_specs in self.workflow.data["datasets"].items():
             self.add_dataset(ds_name, ds_specs)
-            self.total_size += self.dataset(ds_name).size
+
+    @property
+    def all_proc_submitted(self):
+        return all(ds.all_proc_submitted for ds in self._datasets.values())
+
+    @property
+    def items_done(self):
+        return sum(ds.items_done for ds in self._datasets.values())
+
+    @property
+    def items_submitted(self):
+        return sum(ds.items_submitted for ds in self._datasets.values())
+
+    @property
+    def items_total(self):
+        return sum(ds.items_total for ds in self._datasets.values())
+
+    @property
+    def proc_tasks_done(self):
+        return sum(ds.proc_tasks_done for ds in self._datasets.values())
+
+    @property
+    def proc_tasks_submitted(self):
+        return sum(ds.proc_tasks_submitted for ds in self._datasets.values())
+
+    @property
+    def proc_tasks_total(self):
+        total = self.items_total
+        submitted = self.items_submitted
+        if total == 0:
+            return 0
+        if submitted == 0:
+            return 1
+        return int(self.proc_tasks_submitted * math.ceil(total / submitted))
+
+    @property
+    def accum_tasks_done(self):
+        return sum(ds.accum_tasks_done for ds in self._datasets.values())
+
+    @property
+    def accum_tasks_submitted(self):
+        return sum(ds.accum_tasks_submitted for ds in self._datasets.values())
+
+    @property
+    def accum_tasks_total(self):
+        left = max(self.proc_tasks_total - self.proc_tasks_submitted, 0)
+        total_accums = self.accum_tasks_submitted
+
+        while left > self.workflow.accumulation_size:
+            accs, left = divmod(left, self.workflow.accumulation_size)
+            total_accums += accs
+        
+        if left > 0:
+            total_accums += 1
+
+        return total_accums
+
+
 
     def add_dataset(self, dataset_name, dataset_specs):
         self._datasets[dataset_name] = DatasetCounts(
@@ -253,15 +306,31 @@ class ProcCounts:
     def dataset(self, name):
         return self._datasets[name]
 
+    def add_active(self, dataset, task):
+        self.dataset(dataset.name).add_active(task)
+
+        if isinstance(task, DynMapRedProcessingTask):
+            self.workflow.progress_bars[self].update(
+                "proc",
+                total=self.proc_tasks_total,
+            )
+        elif isinstance(task, DynMapRedAccumTask):
+            self.workflow.progress_bars[self].update(
+                "accum",
+                total=self.accum_tasks_total,
+            )
+
     def add_completed(self, dataset, task):
         self.dataset(dataset.name).add_completed(task)
-        if isinstance(task, DynMapRedAccumTask):
-            self.total_accums_done += 1
-            self.total_accums += 1
+
+        if isinstance(task, DynMapRedProcessingTask):
+            self.proc_tasks_done += 1
+        elif isinstance(task, DynMapRedAccumTask):
+            self.accum_tasks_done += 1
             self.workflow.progress_bars[self].update(
-                DynMapRedAccumTask,
-                completed=self.total_accums_done,
-                total=self.total_accums,
+                "accum",
+                completed=self.accum_tasks_done,
+                total=self.accum_tasks_total,
             )
 
     def set_final(self, dataset, task):
@@ -276,7 +345,7 @@ class DatasetCounts:
     processor: ProcCounts
     name: str
     priority: int
-    size: int
+    items_total: int
 
     def __post_init__(self):
         self.all_proc_submitted = False
@@ -284,14 +353,25 @@ class DatasetCounts:
         self.output_file = None
         self.result = None
         self.active = set()
-        self.done_count = 0
-        self.submitted_count = 0
+
+        self.items_done = 0
+        self.items_submitted = 0
+        self.proc_tasks_done = 0
+        self.proc_tasks_submitted = 0
+        self.accum_tasks_done = 0
+        self.accum_tasks_submitted = 0
 
     def add_completed(self, t):
         self.active.remove(t.id)
-        self.done_count += 1
+
+        if isinstance(t, DynMapRedProcessingTask):
+            self.proc_tasks_done += 1
+        elif isinstance(t, DynMapRedAccumTask):
+            self.accum_tasks_done += 1
 
         if t.successful():
+            if isinstance(t, DynMapRedProcessingTask):
+                self.items_done += t.size
             if not t.is_checkpoint() and t.manager.should_checkpoint(t):
                 t.manager._add_fetch_task(t, final=False)
                 return
@@ -303,20 +383,26 @@ class DatasetCounts:
                     f"checkpoint {t.description()}, cumulative(s): {t.cumulative_inputs_time + t.exec_time:.2f}"
                 )
 
-    def add_active(self, tid):
-        self.active.add(tid)
+    def add_active(self, task):
+        if isinstance(task, DynMapRedProcessingTask):
+            self.proc_tasks_submitted += 1
+        elif isinstance(task, DynMapRedAccumTask):
+            self.accum_tasks_submitted += 1
+
+        self.active.add(task.id)
 
     def set_final(self, task):
         self.output_file = task.result_file
 
     def set_result(self, result):
-        self.result = result
+        # self.result = result
+        pass
 
     def ready_for_result(self):
         return (
             self.all_proc_submitted
             and len(self.active) == 0
-            and len(self.pending_accumulation) < 2
+            and len(self.pending_accumulation) == 1
         )
 
 
@@ -488,8 +574,10 @@ class DynMapRedTask(abc.ABC):
             if args:
                 for args in self.resubmit_args_on_exhaustion():
                     new_tasks.append(
-                        datum=args.get("datum", None),
-                        input_tasks=args.get("input_tasks", None),
+                        self._clone_next_attempt(
+                            datum=args.get("datum", None),
+                            input_tasks=args.get("input_tasks", None),
+                        )
                     )
         else:
             new_tasks.append(self._clone_next_attempt())
@@ -561,7 +649,6 @@ class DynMapRedFetchTask(DynMapRedTask):
 
 class DynMapRedAccumTask(DynMapRedTask):
     def __post_init__(self):
-        self.checkpoint = True
         self.priority_constant = 2
         super().__post_init__()
 
@@ -651,24 +738,23 @@ class DynMapReduce:
             return re.sub(r"\W", "_", n)
 
         self._id_to_task = {}
-        self._tasks_active = 0
 
         if isinstance(self.processors, list):
             nps = (len(self.processors) + 1) * priority_separation
             self.processors = {
-                name(p): ProcCounts(name(p), p, priority=nps - i * priority_separation)
+                name(p): ProcCounts(self, name(p), p, priority=nps - i * priority_separation)
                 for i, p in enumerate(self.processors)
             }
         elif isinstance(self.processors, dict):
             nps = (len(self.processors) + 1) * priority_separation
             self.processors = {
-                n: ProcCounts(n, p, priority=nps - i * priority_separation)
+                n: ProcCounts(self, n, p, priority=nps - i * priority_separation)
                 for i, (n, p) in enumerate(self.processors.items())
             }
         else:
             self.processors = {
                 name(self.processors): ProcCounts(
-                    name(self.processors), self.processors, priority=priority_separation
+                    self, name(self.processors), self.processors, priority=priority_separation
                 )
             }
 
@@ -711,6 +797,7 @@ class DynMapReduce:
             )
 
         self._set_env()
+        self.progress_bars = {}
 
     def __getattr__(self, attr):
         # redirect any unknown method to inner manager
@@ -734,8 +821,8 @@ class DynMapReduce:
         self.manager.install_library(libtask)
         self._env = envf
 
-    def _set_resources(self, data):
-        for ds in data:
+    def _set_resources(self):
+        for ds in self.data["datasets"]:
             self.manager.set_category_mode(f"processing#{ds}", "max")
             self.manager.set_category_mode(f"accumulating#{ds}", "max")
 
@@ -759,9 +846,10 @@ class DynMapReduce:
         with lz4.frame.open(ds.output_file.source(), "rb") as fp:
             r = cloudpickle.load(fp)
             if self.result_postprocess:
-                r = self.result_postprocess(r)
+                r = self.result_postprocess(target.processor.name, target.dataset.name, r)
             ds.set_result(r)
-            print(f"{target.processor_name}#{target.dataset_name} completed!")
+            print(f"{target.processor.name}#{target.dataset.name} completed!")
+            self.progress_bars[target.processor].advance("datasets", 1)
 
     def _add_fetch_task(self, target, final):
         t = DynMapRedFetchTask(
@@ -806,7 +894,6 @@ class DynMapReduce:
             final=final,
         )
         self.submit(t)
-        first.processor.total_accums += 1
 
     @property
     def all_proc_submitted(self):
@@ -826,7 +913,7 @@ class DynMapReduce:
 
         new_attempts = t.create_new_attempts()
         if not new_attempts:
-            return
+            return False
 
         for nt in new_attempts:
             self.submit(nt)
@@ -838,15 +925,17 @@ class DynMapReduce:
         if tv:
             t = self._id_to_task.pop(tv.id)
             self._wait_timeout = 0
-            self._tasks_active -= 1
+
+            if isinstance(t, DynMapRedProcessingTask):
+                self.progress_bars[t.processor].advance("proc", 1)
+            elif isinstance(t, DynMapRedAccumTask):
+                self.progress_bars[t.processor].advance("accum", 1)
 
             if t.successful():
                 try:
-                    self.progress_bars[t.processor].advance(type(t), t.size)
+                    self.progress_bars[t.processor].advance("items", t.size)
                 except KeyError:
                     pass
-                self.write_graph_file(t)
-                t.cleanup()
             return t
         else:
             self._wait_timeout = 5
@@ -861,11 +950,9 @@ class DynMapReduce:
         if self.x509_proxy:
             task.set_env_var("X509_USER_PROXY", "proxy.pem")
 
-        self._tasks_active += 1
-
         tid = self.manager.submit(task.vine_task)
         self._id_to_task[tid] = task
-        task.dataset.add_active(tid)
+        task.processor.add_active(task.dataset, task)
 
         return tid
 
@@ -885,17 +972,15 @@ class DynMapReduce:
             args = {}
 
         for p in self.processors.values():
-            p.all_proc_submitted = False
-
             for ds_name, ds_specs in datasets.items():
                 ds = p.dataset(ds_name)
                 ds.all_proc_submitted = False
 
                 gen = self.source_preprocess(ds_specs, **args)
                 for datum, size in gen:
+                    ds.items_submitted += size
                     yield (p, ds, datum, size)
                 p.dataset(ds_name).all_proc_submitted = True
-            p.all_proc_submitted = True
 
     def need_to_submit(self):
         max_active = self.max_tasks_active if self.max_tasks_active else sys.maxsize
@@ -914,9 +999,10 @@ class DynMapReduce:
     ):
         for p in self.processors.values():
             self.progress_bars[p] = ProgressBar()
-            self.progress_bars[p].add_task(ProcCounts, f"{p.name}(ds)", total=len(self.data["datasets"]))
-            self.progress_bars[p].add_task(DynMapRedProcessingTask, f"{p.name}(items)", total=self.total_size)
-            self.progress_bars[p].add_task(DynMapRedAccumTask, f"{p.name}(accums)", total=self.total_accums)
+            self.progress_bars[p].add_task("datasets", f"{p.name}(ds)", total=len(self.data["datasets"]))
+            self.progress_bars[p].add_task("proc", f"{p.name}(procs)", total=p.proc_tasks_total)
+            self.progress_bars[p].add_task("accum", f"{p.name}(accums)", total=p.accum_tasks_total)
+            self.progress_bars[p].add_task("items", f"{p.name}(items)", total=p.items_total)
 
         return self._compute_internal(remote_executor, remote_executor_args)
 
@@ -944,11 +1030,12 @@ class DynMapReduce:
             if t:
                 if t.successful():
                     t.dataset.add_completed(t)
+                    self.write_graph_file(t)
+                    t.cleanup()
                     if t.is_final():
                         self._set_result(t)
                     else:
                         self._accum_or_fetch(t)
-
                 elif not self.resubmit(t):
                     raise RuntimeError(
                         f"task {t.datum} could not be completed\n{t.std_output}\n---\n{t.output}"
@@ -981,7 +1068,7 @@ class ProgressBar:
         rich.progress.MofNCompleteColumn(),
         rich.progress.TimeRemainingColumn(),
         transient=False,
-        auto_refresh=False,
+        auto_refresh=True,
         )
 
     def __init__(self, enabled=True):
@@ -998,17 +1085,17 @@ class ProgressBar:
 
     def stop_task(self, bar_type, *args, **kwargs):
         result = self._prog.stop_task(self._ids[bar_type], *args, **kwargs)
-        self._prog.refresh()
+        # self._prog.refresh()
         return result
 
     def update(self, bar_type, *args, **kwargs):
         result = self._prog.update(self._ids[bar_type], *args, **kwargs)
-        self._prog.refresh()
+        # self._prog.refresh()
         return result
 
     def advance(self, bar_type, *args, **kwargs):
         result = self._prog.advance(self._ids[bar_type], *args, **kwargs)
-        self._prog.refresh()
+        # self._prog.refresh()
         return result
 
     # redirect anything else to rich_bar
@@ -1056,7 +1143,7 @@ if __name__ == "__main__":
         return da.from_array(list(range(0, n * 1000000, n))[0:10])
 
     def double_data(datum):
-        return datum.map_blocks(lambda x: x * 2)
+        return datum.proc_blocks(lambda x: x * 2)
 
     def add_data(a, b):
         return a + b
