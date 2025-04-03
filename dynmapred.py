@@ -766,10 +766,11 @@ class DynMapReduce:
     def _add_fetch_task(self, target, final):
         t = DynMapRedFetchTask(
             self,
-            target.processor_name,
-            target.dataset_name,
+            target.processor,
+            target.dataset,
             None,
-            [target],
+            size=1,
+            input_tasks=[target],
             final=final,
         )
         self.submit(t)
