@@ -332,8 +332,8 @@ def make_processor():
                 depth_limit=1,
             )
 
-        #skim.visualize(f'/scratch365/btovar/ecf_calculator_output/graph_cores_{cores}_factor_{cores_factor}_ntasks_{len(list(skim.keys()))}.svg')
-        skim.visualize(f'/scratch365/btovar/ecf_calculator_output/graph_cores_{cores}_factor_{cores_factor}_id_{id(skim)}.svg')
+        # skim.visualize(f'/scratch365/btovar/ecf_calculator_output/graph_cores_{cores}_factor_{cores_factor}_ntasks_{len(list(skim.keys()))}.svg')
+        # skim.visualize(f'/scratch365/btovar/ecf_calculator_output/graph_cores_{cores}_factor_{cores_factor}_id_{id(skim)}.svg')
 
         return skim
 
@@ -437,6 +437,7 @@ if __name__ == "__main__":
         for dataset, skim in data.items():
             if skim is not None:
                 dir = f"/scratch365/btovar/ecf_calculator_output/{dataset}/"
+                dir = f"/tmp/btovar/results/{dataset}/"
                 pathlib.Path(dir).mkdir(parents=True, exist_ok=True)
                 ak.to_parquet(
                     skim,

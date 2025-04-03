@@ -2,6 +2,7 @@
 
 import dask.array as da
 import cloudpickle
+import json
 import lz4.frame
 import sys
 import math
@@ -9,20 +10,24 @@ import re
 import os
 from pathlib import Path
 
-# import rich
 import uuid
 import abc
 import dataclasses
 import concurrent.futures
 import multiprocessing as mp
 
+import rich.progress
+from rich import print
+
 import ndcctools.taskvine as vine
+
 
 from typing import Any, Callable, Hashable, Mapping, List, Optional, TypeVar, Self
 
 D = TypeVar("D")
 P = TypeVar("P")
 H = TypeVar("H")
+
 
 priority_separation = 1_000_000
 
@@ -32,6 +37,7 @@ class CloudpickleProcessPoolExecutor(concurrent.futures.ProcessPoolExecutor):
     @staticmethod
     def _cloudpickle_process_worker(serialized_data):
         import cloudpickle
+
         fn, args, kwargs = cloudpickle.loads(serialized_data)
         return fn(*args, **kwargs)
 
@@ -42,9 +48,10 @@ class CloudpickleProcessPoolExecutor(concurrent.futures.ProcessPoolExecutor):
     def submit(self, fn, *args, **kwargs):
         # Cloudpickle the function and arguments
         fn_dumps = cloudpickle.dumps((fn, args, kwargs))
-        
         # Submit the wrapper with the serialized data
-        return super().submit(CloudpickleProcessPoolExecutor._cloudpickle_process_worker, fn_dumps)
+        return super().submit(
+            CloudpickleProcessPoolExecutor._cloudpickle_process_worker, fn_dumps
+        )
 
 
 def wrap_processing(
@@ -56,15 +63,13 @@ def wrap_processing(
     local_executor_args=None,
 ):
     import os
-    import dask
     import warnings
 
     if not local_executor_args:
         local_executor_args = {}
 
-    local_executor_args.setdefault("num_workers", 1 + int(os.environ.get("CORES", 1)))
-    scheduler = local_executor_args.get("scheduler", "cloudpickle_processes")
-    scheduler = "cloudpickle_processes"
+    local_executor_args.setdefault("num_workers", int(os.environ.get("CORES", 1)))
+    scheduler = local_executor_args.get("scheduler", "threads")
 
     if processor_args is None:
         processor_args = {}
@@ -87,27 +92,29 @@ def wrap_processing(
         if scheduler == "cloudpickle_processes" and num_workers > 0:
             # Use our custom ProcessPoolExecutor with cloudpickle
             try:
+                # import multiprocessing as mp
+                # mp.freeze_support()
                 with CloudpickleProcessPoolExecutor(
                     max_workers=num_workers
                 ) as executor:
                     # result = dask.compute(to_maybe_compute,
                     result = to_maybe_compute.compute(
-                                            scheduler="processes",
-                                            pool=executor,
-                                            optimize_graph=False,
-                                            num_workers=num_workers,
-                                            ave_width=4,
-                                            max_width=1,
-                                            max_height=None,
-                                            subgraphs=False,)
+                        scheduler="processes",
+                        pool=executor,
+                        optimize_graph=False,
+                        num_workers=num_workers,
+                        max_height=None,
+                        subgraphs=False,
+                    )
             except Exception as e:
                 warnings.warn(
                     f"CloudpickleProcessPoolExecutor failed: {str(e)}. Falling back to default scheduler."
                 )
-                result = to_maybe_compute.compute(**local_exec_args)
+                # result = to_maybe_compute.compute(num_workers=num_workers)
+                raise e
         else:
             # Default case - use dask's default scheduler
-            result = to_maybe_compute.compute(**local_executor_args)
+            result = to_maybe_compute.compute(num_workers=num_workers)
     else:
         # If not a Dask object, just use the result directly
         result = to_maybe_compute
@@ -197,9 +204,7 @@ def accumulate_tree(
         task_graph[key] = (accumulator_w_kwargs, *firsts)
         to_reduce.append(key)
 
-    out = dask.get(
-        task_graph, to_reduce[0], executor=local_executor, **local_executor_args
-    )
+    out = dask.get(task_graph, to_reduce[0], **local_executor_args)
     if to_file:
         with lz4.frame.open("task_output.p", "wb") as fp:
             cloudpickle.dump(out, fp)
@@ -221,60 +226,85 @@ def default_accumualtor(a, b, **extra_args):
 
 @dataclasses.dataclass
 class ProcCounts:
+    workflow: object  # really a DynMapReduce, but typing in python is a pain
     name: str
     fn: Callable[[P], H]
     priority: int = 0
 
     def __post_init__(self):
-        self._datasets: dict[str, DatasetCounts] = {}
         self.all_proc_submitted = False
+        self._datasets = {}
 
-    def dataset(self, name):
-        return self._datasets.setdefault(
-            name, DatasetCounts(name, self.priority - len(self._datasets))
+        self.total_size = 0
+        self.total_accums_done = 0
+        self.total_accums = 0
+        for ds_name, ds_specs in self.workflow.data["datasets"].items():
+            self.add_dataset(ds_name, ds_specs)
+            self.total_size += self.dataset(ds_name).size
+
+    def add_dataset(self, dataset_name, dataset_specs):
+        self._datasets[dataset_name] = DatasetCounts(
+            self,
+            dataset_name,
+            self.priority - len(self._datasets),
+            dataset_specs["size"],
         )
 
-    def inc_submitted(self, dataset):
-        self.datasets(dataset).inc_submitted()
+    def dataset(self, name):
+        return self._datasets[name]
 
     def add_completed(self, dataset, task):
-        self.datasets(dataset).add_completed(task)
+        self.dataset(dataset.name).add_completed(task)
+        if isinstance(task, DynMapRedAccumTask):
+            self.total_accums_done += 1
+            self.total_accums += 1
+            self.workflow.progress_bars[self].update(
+                DynMapRedAccumTask,
+                completed=self.total_accums_done,
+                total=self.total_accums,
+            )
 
     def set_final(self, dataset, task):
-        self.datasets(dataset).set_final(task)
+        self.dataset(dataset.name).set_final(task)
+
+    def __hash__(self):
+        return id(self)
 
 
 @dataclasses.dataclass
 class DatasetCounts:
+    processor: ProcCounts
     name: str
     priority: int
+    size: int
 
     def __post_init__(self):
         self.all_proc_submitted = False
         self.pending_accumulation = []
-        self.done_count = 0
-        self.active_count = 0
         self.output_file = None
         self.result = None
-
-    def inc_submitted(self, n=1):
-        self.active_count += n
+        self.active = set()
+        self.done_count = 0
+        self.submitted_count = 0
 
     def add_completed(self, t):
-        self.active_count -= 1
+        self.active.remove(t.id)
+        self.done_count += 1
 
         if t.successful():
             if not t.is_checkpoint() and t.manager.should_checkpoint(t):
                 t.manager._add_fetch_task(t, final=False)
                 return
 
-            self.done_count += 1
             if not t.is_final():
                 self.pending_accumulation.append(t)
             if t.is_checkpoint():
                 print(
-                    f"retrieved {t.description()} {t.checkpoint_distance} {t.exec_time} {t.cumulative_exec_time}"
+                    f"checkpoint {t.description()}, cumulative(s): {t.cumulative_inputs_time + t.exec_time:.2f}"
                 )
+
+    def add_active(self, tid):
+        self.active.add(tid)
 
     def set_final(self, task):
         self.output_file = task.result_file
@@ -285,7 +315,7 @@ class DatasetCounts:
     def ready_for_result(self):
         return (
             self.all_proc_submitted
-            and self.active_count == 0
+            and len(self.active) == 0
             and len(self.pending_accumulation) < 2
         )
 
@@ -293,13 +323,14 @@ class DatasetCounts:
 @dataclasses.dataclass
 class DynMapRedTask(abc.ABC):
     manager: vine.Manager
-    processor_name: str
-    dataset_name: str
+    processor: ProcCounts
+    dataset: DatasetCounts
     datum: Hashable
+    _: dataclasses.KW_ONLY
+    size: int = 0
     input_tasks: list | None = (
         None  # want list[DynMapRedTask] and list[Self] does not inheret well
     )
-    _: dataclasses.KW_ONLY
     checkpoint: bool = False
     final: bool = False
     attempt_number: int = 1
@@ -315,14 +346,17 @@ class DynMapRedTask(abc.ABC):
                 t.checkpoint_distance for t in self.input_tasks
             )
 
+        self._cumulative_inputs_time = 0
+        if self.input_tasks:
+            self._cumulative_inputs_time = sum(
+                t.exec_time + t.cumulative_inputs_time
+                for t in self.input_tasks
+                if not t.is_checkpoint()
+            )
+
         self.checkpoint = self.manager.should_checkpoint(self)
 
-        self.processor = self.manager.processors[self.processor_name]
-        self.dataset = self.processor.dataset(self.dataset_name)
         self._vine_task = self.create_task(
-            self.manager,
-            self.processor,
-            self.dataset,
             self.datum,
             self.input_tasks,
             self.result_file,
@@ -365,9 +399,9 @@ class DynMapRedTask(abc.ABC):
         if not self._result_file:
             if self.is_checkpoint():
                 if self.is_final():
-                    name = f"{self.manager.results_directory}/{self.processor_name}/{self.dataset_name}"
+                    name = f"{self.manager.results_directory}/{self.processor.name}/{self.dataset.name}"
                 else:
-                    name = f"{self.manager.staging_directory}/{self.processor_name}/{uuid.uuid4()}"
+                    name = f"{self.manager.staging_directory}/{self.processor.name}/{uuid.uuid4()}"
                 self._result_file = self.manager.declare_file(
                     name,
                     cache=(not self.is_final()),
@@ -385,13 +419,17 @@ class DynMapRedTask(abc.ABC):
             return self.resources_measured.wall_time
 
     @property
+    def cumulative_inputs_time(self):
+        return self._cumulative_inputs_time
+
+    @property
     def cumulative_exec_time(self):
         if self.is_checkpoint():
             return 0
 
         cumulative = 0
         if self.input_tasks:
-            cumulative += sum(t.cumulative_exec_time for t in self.input_tasks)
+            cumulative = sum(t.cumulative_exec_time for t in self.input_tasks)
 
         here = self.exec_time
         if here and here > 0:
@@ -402,9 +440,6 @@ class DynMapRedTask(abc.ABC):
     @abc.abstractmethod
     def create_task(
         self: Self,
-        manager: vine.Manager,
-        processor: ProcCounts,
-        dataset: DatasetCounts,
         datum: Hashable,
         input_tasks: list | None,
         result_file: vine.File,
@@ -430,10 +465,11 @@ class DynMapRedTask(abc.ABC):
     def _clone_next_attempt(self, datum=None, input_tasks=None):
         return type(self)(
             self.manager,
-            self.processor_name,
-            self.dataset_name,
+            self.processor,
+            self.dataset,
             datum if datum is not None else self.datum,
-            input_tasks if input_tasks is not None else self.input_tasks,
+            size=1 if input_tasks is None else self.size,
+            input_tasks=input_tasks if input_tasks is not None else self.input_tasks,
             checkpoint=self.checkpoint,
             final=self.final,
             attempt_number=self.attempt_number + 1,
@@ -464,9 +500,6 @@ class DynMapRedTask(abc.ABC):
 class DynMapRedProcessingTask(DynMapRedTask):
     def create_task(
         self: Self,
-        manager: vine.Manager,
-        processor: ProcCounts,
-        dataset: DatasetCounts,
         datum: Hashable,
         input_tasks: list[Self] | None,
         result_file: vine.File,
@@ -474,20 +507,20 @@ class DynMapRedProcessingTask(DynMapRedTask):
         # task = vine.FunctionCall(self._lib_name, 'wrap_processing', self._processor, datum)
         task = vine.PythonTask(
             wrap_processing,
-            processor.fn,
-            manager.source_postprocess,
+            self.processor.fn,
+            self.manager.source_postprocess,
             datum,
-            manager.processor_args,
-            manager.source_postprocess_args,
+            self.manager.processor_args,
+            self.manager.source_postprocess_args,
         )
 
-        for k, v in manager.resources_processing.items():
+        for k, v in self.manager.resources_processing.items():
             getattr(task, f"set_{k}")(v)
 
         return task
 
     def description(self):
-        return f"processing#{self.processor_name}#{self.dataset_name}"
+        return f"processing#{self.processor.name}#{self.dataset.name}"
 
     def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
         return None
@@ -496,25 +529,18 @@ class DynMapRedProcessingTask(DynMapRedTask):
 class DynMapRedFetchTask(DynMapRedTask):
     def __post_init__(self):
         self.checkpoint = True
-        self.priority_constant = 3
+        self.priority_constant = 2
         super().__post_init__()
 
     def create_task(
         self: Self,
-        manager: vine.Manager,
-        processor: ProcCounts,
-        dataset: DatasetCounts,
         datum: Hashable,
         input_tasks,
         result_file: vine.File,
     ) -> vine.Task:
 
         assert input_tasks is not None and len(input_tasks) == 1
-
         target = input_tasks[0]
-
-        # task = vine.Task("ln -s task_input.p task_output.p")
-        # task = vine.Task("cp task_input.p task_output.p")
 
         task = vine.Task("ln -L task_input.p task_output.p")
         task.add_input(
@@ -526,7 +552,7 @@ class DynMapRedFetchTask(DynMapRedTask):
         return task
 
     def description(self):
-        return f"fetching#{self.processor_name}#{self.dataset_name}"
+        return f"fetching#{self.processor.name}#{self.dataset.name}"
 
     def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
         # resubmit with the same args
@@ -541,17 +567,12 @@ class DynMapRedAccumTask(DynMapRedTask):
 
     def create_task(
         self: Self,
-        manager: vine.Manager,
-        processor: ProcCounts,
-        dataset: DatasetCounts,
         datum: Hashable,
         input_tasks,
         result_file: vine.File,
     ) -> vine.Task:
 
-        # task = vine.FunctionCall(self._lib_name, "accumulate", self._accumulator, [f"input_{tid}" for tid in firsts])
         task = vine.PythonTask(
-            # accumulate_tree,
             accumulate,
             self.manager.accumulator,
             [f"input_{t.id}" for t in input_tasks],
@@ -562,23 +583,23 @@ class DynMapRedAccumTask(DynMapRedTask):
         for t in input_tasks:
             task.add_input(t.result_file, f"input_{t.id}")
 
-        task.set_category(f"accumulating#{processor.name}#{dataset.name}")
+        task.set_category(f"accumulating#{self.processor.name}#{self.dataset.name}")
 
-        for k, v in manager.resources_accumualting.items():
+        for k, v in self.manager.resources_accumualting.items():
             getattr(task, f"set_{k}")(v)
 
         return task
 
     def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
         n = len(self.input_tasks)
-        if n < 4 or self.manager.accum_size < 2:
+        if n < 4 or self.manager.accumulation_size < 2:
             return None
 
-        if n >= self.manager.accum_size:
-            self.manager.accum_size = int(
-                math.ceil(self.manager.accum_size / 2)
+        if n >= self.manager.accumulation_size:
+            self.manager.accumulation_size = int(
+                math.ceil(self.manager.accumulation_size / 2)
             )  # this should not be here
-            print("reducing accumulation size to {self.accum_size}")
+            print("reducing accumulation size to {self.accumulation_size}")
 
         ts = [
             {"input_tasks": self.input_tasks[0:n]},
@@ -590,15 +611,14 @@ class DynMapRedAccumTask(DynMapRedTask):
         return ts
 
     def description(self):
-        return f"accumulating#{self.processor_name}#{self.dataset_name}"
+        return f"accumulating#{self.processor.name}#{self.dataset.name}"
 
 
 @dataclasses.dataclass
 class DynMapReduce:
     manager: vine.Manager
-    processors: (
-        Callable[[P], H] | List[Callable[[P], H]] | dict[str, [Callable[[P], H]]]
-    )
+    processors: Callable[[P], H] | List[Callable[[P], H]] | dict[str, Callable[[P], H]]
+    data: dict[str, dict[str, Any]]
     accumulation_size: int = 10
     accumulator: Callable[[H, H], H] = default_accumualtor
     accumulator_args: Optional[Mapping[str, Any]] = None
@@ -607,7 +627,6 @@ class DynMapReduce:
     environment: Optional[str] = None
     extra_files: Optional[list[str]] = None
     file_replication: int = 1
-    max_sources_per_dataset: Optional[int] = None
     max_task_retries: int = 5
     max_tasks_active: Optional[int] = None
     max_tasks_submit_batch: Optional[int] = None
@@ -615,7 +634,7 @@ class DynMapReduce:
     resources_accumualting: Optional[Mapping[str, float]] = None
     resources_processing: Optional[Mapping[str, float]] = None
     results_directory: str = "results"
-    result_postprocess: Optional[Callable[[H], Any]] = None
+    result_postprocess: Optional[Callable[[str, H], Any]] = None
     source_postprocess: Callable[[D], P] = identity_source_conector
     source_postprocess_args: Optional[Mapping[str, Any]] = None
     source_preprocess: Callable[[Any], D] = identity_source_preprocess
@@ -759,10 +778,10 @@ class DynMapReduce:
         final = False
         accum_size = max(2, self.accumulation_size)
 
-        if ds.all_proc_submitted and ds.active_count == 0:
+        if ds.all_proc_submitted and len(ds.active) == 0:
             if len(ds.pending_accumulation) <= accum_size:
                 final = True
-        elif len(ds.pending_accumulation) < 2 * accum_size - accum_size / 2:
+        elif len(ds.pending_accumulation) < 2 * accum_size:
             return
 
         ds.pending_accumulation.sort(
@@ -777,14 +796,16 @@ class DynMapReduce:
         first = heads[0]
         t = DynMapRedAccumTask(
             self,
-            first.processor_name,
-            first.dataset_name,
+            first.processor,
+            first.dataset,
             None,
-            heads,
+            size=1,
+            input_tasks=heads,
             checkpoint=self.checkpoint_accumulations,
             final=final,
         )
         self.submit(t)
+        first.processor.total_accums += 1
 
     @property
     def all_proc_submitted(self):
@@ -819,6 +840,10 @@ class DynMapReduce:
             self._tasks_active -= 1
 
             if t.successful():
+                try:
+                    self.progress_bars[t.processor].advance(type(t), t.size)
+                except KeyError:
+                    pass
                 self.write_graph_file(t)
                 t.cleanup()
             return t
@@ -837,10 +862,9 @@ class DynMapReduce:
 
         self._tasks_active += 1
 
-        task.dataset.inc_submitted()
-
         tid = self.manager.submit(task.vine_task)
         self._id_to_task[tid] = task
+        task.dataset.add_active(tid)
 
         return tid
 
@@ -862,17 +886,13 @@ class DynMapReduce:
         for p in self.processors.values():
             p.all_proc_submitted = False
 
-            for ds_name, info in datasets.items():
-                p.dataset(ds_name).all_proc_submitted = False
-                max = self.max_sources_per_dataset
-                for datum in info:
-                    gen_ds = self.source_preprocess(datum, *args)
-                    for sub_datum in gen_ds:
-                        yield (p.name, ds_name, sub_datum)
-                    if max is not None:
-                        max -= 1
-                        if max < 1:
-                            break
+            for ds_name, ds_specs in datasets.items():
+                ds = p.dataset(ds_name)
+                ds.all_proc_submitted = False
+
+                gen = self.source_preprocess(ds_specs, **args)
+                for datum, size in gen:
+                    yield (p, ds, datum, size)
                 p.dataset(ds_name).all_proc_submitted = True
             p.all_proc_submitted = True
 
@@ -888,19 +908,32 @@ class DynMapReduce:
 
     def compute(
         self,
-        data,
-        manager_args=None,
         remote_executor=None,
         remote_executor_args=None,
     ):
-        self._set_resources(data)
-        data_iter = self.generate_processing_args(data)
+        for p in self.processors.values():
+            self.progress_bars[p] = ProgressBar()
+            self.progress_bars[p].add_task(ProcCounts, f"{p.name}(ds)", total=len(self.data["datasets"]))
+            self.progress_bars[p].add_task(DynMapRedProcessingTask, f"{p.name}(items)", total=self.total_size)
+            self.progress_bars[p].add_task(DynMapRedAccumTask, f"{p.name}(accums)", total=self.total_accums)
+
+        return self._compute_internal(remote_executor, remote_executor_args)
+
+    def _compute_internal(
+        self,
+        remote_executor=None,
+        remote_executor_args=None,
+    ):
+        self._set_resources()
+        item_generator = self.generate_processing_args(self.data["datasets"])
 
         while True:
             to_submit = self.need_to_submit()
             if to_submit > 0:
-                for proc_name, ds_name, datum in data_iter:
-                    t = DynMapRedProcessingTask(self, proc_name, ds_name, datum, None)
+                for proc_name, ds_name, datum, size in item_generator:
+                    t = DynMapRedProcessingTask(
+                        self, proc_name, ds_name, datum, size=size, input_tasks=None
+                    )
                     self.submit(t)
                     to_submit -= 1
                     if to_submit < 1:
@@ -930,7 +963,7 @@ class DynMapReduce:
         results = {}
         for p in self.processors.values():
             results_proc = {}
-            for ds_name in data:
+            for ds_name in self.data["datasets"]:
                 r = p.dataset(ds_name).result
                 results_proc[ds_name] = r
             results[p.name] = results_proc
@@ -938,15 +971,85 @@ class DynMapReduce:
         return results
 
 
+class ProgressBar:
+    @staticmethod
+    def make_progress_bar():
+        return rich.progress.Progress(
+        rich.progress.TextColumn("{task.description}"),
+        rich.progress.BarColumn(),
+        rich.progress.MofNCompleteColumn(),
+        rich.progress.TimeRemainingColumn(),
+        transient=False,
+        auto_refresh=False,
+        )
+
+    def __init__(self, enabled=True):
+        self._prog = self.make_progress_bar()
+        self._ids = {}
+        if enabled:
+            self._prog.start()
+
+    def add_task(self, bar_type, desc, *args, **kwargs):
+        b = self._prog.add_task(desc, *args, **kwargs)
+        self._ids[bar_type] = b
+        self._prog.start_task(self._ids[bar_type])
+        return b
+
+    def stop_task(self, bar_type, *args, **kwargs):
+        result = self._prog.stop_task(self._ids[bar_type], *args, **kwargs)
+        self._prog.refresh()
+        return result
+
+    def update(self, bar_type, *args, **kwargs):
+        result = self._prog.update(self._ids[bar_type], *args, **kwargs)
+        self._prog.refresh()
+        return result
+
+    def advance(self, bar_type, *args, **kwargs):
+        result = self._prog.advance(self._ids[bar_type], *args, **kwargs)
+        self._prog.refresh()
+        return result
+
+    # redirect anything else to rich_bar
+    def __getattr__(self, name):
+        return getattr(self._prog, name)
+
+    # return rich.progress.Progress(
+    #     TextColumn("[bold blue]{task.description}", justify="right"),
+    #     "[progress.percentage]{task.percentage:>3.0f}%",
+
+    #     BarColumn(bar_width=None),
+    #     TextColumn(
+    #         "[bold blue][progress.completed]{task.completed}/{task.total}",
+    #         justify="right",
+    #     ),
+    #     "[",
+    #     TimeElapsedColumn(),
+    #     "<",
+    #     TimeRemainingColumn(),
+    #     "|",
+    #     SpeedColumn(".1f"),
+    #     TextColumn("[progress.data.speed]{task.fields[unit]}/s", justify="right"),
+    #     "]",
+    #     auto_refresh=False,
+    # )
+
 if __name__ == "__main__":
     import itertools
 
-    data = {"some_ds": list(itertools.pairwise(range(1, 13)))}
+    n = 12
+    data = {
+        "datasets": {
+            "some_ds": {"pairs": list(itertools.pairwise(range(1, n + 1))), "size": n}
+        },
+        "size": n,
+    }
 
     # data = [da.from_array(list(range(0, n * 1000000, n))[0:10]) for n in range(1, 10000)]
 
-    def preprocess(pair):
-        yield from pair
+    def preprocess(ds):
+        for pair in ds["pairs"]:
+            yield from (pair, 1)
 
     def postprocess(n):
         return da.from_array(list(range(0, n * 1000000, n))[0:10])
@@ -964,6 +1067,7 @@ if __name__ == "__main__":
         source_postprocess=postprocess,
         processors=double_data,
         accumulator=add_data,
+        data=data,
     )
 
     workers = vine.Factory("local", manager=mgr)
