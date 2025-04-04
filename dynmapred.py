@@ -239,7 +239,7 @@ class ProcCounts:
 
     @property
     def all_proc_submitted(self):
-        return all(ds.all_proc_submitted for ds in self._datasets.values())
+        return all(ds.all_proc_submitted for ds in reversed(self._datasets.values()))
 
     @property
     def items_done(self):
@@ -281,13 +281,18 @@ class ProcCounts:
 
     @property
     def accum_tasks_total(self):
-        left = max(self.proc_tasks_total - self.proc_tasks_submitted, 0)
+        left = (
+            self.proc_tasks_total
+            - self.proc_tasks_done
+            + self.accum_tasks_submitted
+            - self.accum_tasks_done
+        )
         total_accums = self.accum_tasks_submitted
 
         while left > self.workflow.accumulation_size:
             accs, left = divmod(left, self.workflow.accumulation_size)
             total_accums += accs
-        
+            left += accs
         if left > 0:
             total_accums += 1
 
@@ -309,32 +314,31 @@ class ProcCounts:
     def add_active(self, dataset, task):
         self.dataset(dataset.name).add_active(task)
 
+        self.workflow.progress_bars[self].update(
+            "proc",
+            total=self.proc_tasks_total,
+        )
+        self.workflow.progress_bars[self].update(
+            "accum",
+            total=self.accum_tasks_total,
+        )
+
+    def add_completed(self, task):
+        self.dataset(task.dataset.name).add_completed(task)
+
+        self.workflow.progress_bars[self].update(
+            "accum",
+            completed=self.accum_tasks_done,
+        )
         if isinstance(task, DynMapRedProcessingTask):
-            self.workflow.progress_bars[self].update(
+            self.workflow.progress_bars[self].advance(
                 "proc",
-                total=self.proc_tasks_total,
             )
-        elif isinstance(task, DynMapRedAccumTask):
-            self.workflow.progress_bars[self].update(
-                "accum",
-                total=self.accum_tasks_total,
-            )
-
-    def add_completed(self, dataset, task):
-        self.dataset(dataset.name).add_completed(task)
-
-        if isinstance(task, DynMapRedProcessingTask):
-            self.proc_tasks_done += 1
-        elif isinstance(task, DynMapRedAccumTask):
-            self.accum_tasks_done += 1
-            self.workflow.progress_bars[self].update(
-                "accum",
-                completed=self.accum_tasks_done,
-                total=self.accum_tasks_total,
-            )
-
-    def set_final(self, dataset, task):
-        self.dataset(dataset.name).set_final(task)
+            if task.successful():
+                self.workflow.progress_bars[self].advance(
+                    "items",
+                    task.size,
+                )
 
     def __hash__(self):
         return id(self)
@@ -361,27 +365,35 @@ class DatasetCounts:
         self.accum_tasks_done = 0
         self.accum_tasks_submitted = 0
 
-    def add_completed(self, t):
-        self.active.remove(t.id)
+    def add_completed(self, task):
+        # TODO: refactor to use the manager with an add_completed method
+        workflow = self.processor.workflow
+        self.active.remove(task.id)
 
-        if isinstance(t, DynMapRedProcessingTask):
+        if isinstance(task, DynMapRedProcessingTask):
             self.proc_tasks_done += 1
-        elif isinstance(t, DynMapRedAccumTask):
+        elif isinstance(task, DynMapRedAccumTask):
             self.accum_tasks_done += 1
 
-        if t.successful():
-            if isinstance(t, DynMapRedProcessingTask):
-                self.items_done += t.size
-            if not t.is_checkpoint() and t.manager.should_checkpoint(t):
-                t.manager._add_fetch_task(t, final=False)
-                return
-
-            if not t.is_final():
-                self.pending_accumulation.append(t)
-            if t.is_checkpoint():
+        if task.successful():
+            if task.is_checkpoint():
                 print(
-                    f"checkpoint {t.description()}, cumulative(s): {t.cumulative_inputs_time + t.exec_time:.2f}"
+                    f"checkpoint {task.description()}, cumulative(s): {task.cumulative_inputs_time + task.exec_time:.2f}"
                 )
+            workflow.write_graph_file(task)
+            task.cleanup()
+
+            if isinstance(task, DynMapRedProcessingTask):
+                self.items_done += task.size
+            if task.is_final():
+                self.set_result(task)
+            elif self.ready_for_result():
+                workflow.add_fetch_task(task, final=True)
+            elif not task.is_checkpoint() and workflow.should_checkpoint(task):
+                workflow.add_fetch_task(task, final=False)
+            else:
+                self.pending_accumulation.append(task)
+                workflow.add_accum_task(self)
 
     def add_active(self, task):
         if isinstance(task, DynMapRedProcessingTask):
@@ -391,18 +403,22 @@ class DatasetCounts:
 
         self.active.add(task.id)
 
-    def set_final(self, task):
-        self.output_file = task.result_file
 
-    def set_result(self, result):
-        # self.result = result
-        pass
+    def set_result(self, task):
+        self.output_file = task.result_file
+        with lz4.frame.open(self.output_file.source(), "rb") as fp:
+            r = cloudpickle.load(fp)
+            if self.processor.workflow.result_postprocess:
+                r = self.processor.workflow.result_postprocess(self.processor.name, self.name, r)
+            # self.result = r
+            print(f"{self.processor.name}#{self.name} completed!")
+            self.processor.workflow.progress_bars[self.processor].advance("datasets", 1)
 
     def ready_for_result(self):
         return (
             self.all_proc_submitted
             and len(self.active) == 0
-            and len(self.pending_accumulation) == 1
+            and len(self.pending_accumulation) == 0
         )
 
 
@@ -833,25 +849,8 @@ class DynMapReduce:
                 f"accumulating#{ds}", self.resources_accumualting
             )
 
-    def _accum_or_fetch(self, task):
-        ds = task.dataset
-        if ds.ready_for_result():
-            self._add_fetch_task(task, final=True)
-        else:
-            self._add_accum_task(ds)
 
-    def _set_result(self, target):
-        ds = target.dataset
-        ds.set_final(target)
-        with lz4.frame.open(ds.output_file.source(), "rb") as fp:
-            r = cloudpickle.load(fp)
-            if self.result_postprocess:
-                r = self.result_postprocess(target.processor.name, target.dataset.name, r)
-            ds.set_result(r)
-            print(f"{target.processor.name}#{target.dataset.name} completed!")
-            self.progress_bars[target.processor].advance("datasets", 1)
-
-    def _add_fetch_task(self, target, final):
+    def add_fetch_task(self, target, final):
         t = DynMapRedFetchTask(
             self,
             target.processor,
@@ -863,7 +862,7 @@ class DynMapReduce:
         )
         self.submit(t)
 
-    def _add_accum_task(self, ds):
+    def add_accum_task(self, ds):
         final = False
         accum_size = max(2, self.accumulation_size)
 
@@ -897,7 +896,7 @@ class DynMapReduce:
 
     @property
     def all_proc_submitted(self):
-        return all(p.all_proc_submitted for p in self.processors.values())
+        return all(p.all_proc_submitted for p in reversed(self.processors.values()))
 
     def should_checkpoint(self, t):
         if t.checkpoint or t.final:
@@ -926,16 +925,6 @@ class DynMapReduce:
             t = self._id_to_task.pop(tv.id)
             self._wait_timeout = 0
 
-            if isinstance(t, DynMapRedProcessingTask):
-                self.progress_bars[t.processor].advance("proc", 1)
-            elif isinstance(t, DynMapRedAccumTask):
-                self.progress_bars[t.processor].advance("accum", 1)
-
-            if t.successful():
-                try:
-                    self.progress_bars[t.processor].advance("items", t.size)
-                except KeyError:
-                    pass
             return t
         else:
             self._wait_timeout = 5
@@ -1028,15 +1017,8 @@ class DynMapReduce:
 
             t = self.wait(5)
             if t:
-                if t.successful():
-                    t.dataset.add_completed(t)
-                    self.write_graph_file(t)
-                    t.cleanup()
-                    if t.is_final():
-                        self._set_result(t)
-                    else:
-                        self._accum_or_fetch(t)
-                elif not self.resubmit(t):
+                t.processor.add_completed(t)
+                if not t.successful() and not self.resubmit(t):
                     raise RuntimeError(
                         f"task {t.datum} could not be completed\n{t.std_output}\n---\n{t.output}"
                     )
