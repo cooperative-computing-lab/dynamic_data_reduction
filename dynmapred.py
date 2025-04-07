@@ -238,8 +238,8 @@ class ProcCounts:
             self.add_dataset(ds_name, ds_specs)
 
     @property
-    def all_proc_submitted(self):
-        return all(ds.all_proc_submitted for ds in reversed(self._datasets.values()))
+    def all_proc_done(self):
+        return all(ds.all_proc_done for ds in reversed(self._datasets.values()))
 
     @property
     def items_done(self):
@@ -263,13 +263,20 @@ class ProcCounts:
 
     @property
     def proc_tasks_total(self):
-        total = self.items_total
-        submitted = self.items_submitted
-        if total == 0:
+        items_total = self.items_total
+        items_submitted = self.items_submitted
+        items_done = self.items_done
+        tasks_done = self.proc_tasks_done
+        tasks_submitted = self.proc_tasks_submitted
+
+        if items_total == 0:
             return 0
-        if submitted == 0:
+        elif items_submitted == 0:
             return 1
-        return int(self.proc_tasks_submitted * math.floor(total / submitted))
+        elif items_done == 0:
+            return math.floor(items_total / items_submitted) * tasks_submitted
+        else:
+            return math.floor(items_total / items_done) * tasks_submitted
 
     @property
     def accum_tasks_done(self):
@@ -301,6 +308,8 @@ class ProcCounts:
 
         return total_accums
 
+    def __hash__(self):
+        return id(self)
 
 
     def add_dataset(self, dataset_name, dataset_specs):
@@ -317,47 +326,55 @@ class ProcCounts:
     def add_active(self, task):
         self.dataset(task.dataset.name).add_active(task)
 
-        self.workflow.progress_bars[self].update(
-            "proc",
+        self.workflow.progress_bars.update(
+            self,
+            "procs",
             total=self.proc_tasks_total,
         )
-        self.workflow.progress_bars[self].update(
-            "accum",
+        self.workflow.progress_bars.update(
+            self,
+            "accums",
             total=self.accum_tasks_total,
         )
 
     def add_completed(self, task):
         self.dataset(task.dataset.name).add_completed(task)
 
-        self.workflow.progress_bars[self].update(
-            "accum",
+        self.workflow.progress_bars.update(
+            self,
+            "accums",
             completed=self.accum_tasks_done,
         )
         if isinstance(task, DynMapRedProcessingTask):
-            self.workflow.progress_bars[self].update(
-                "proc",
+            self.workflow.progress_bars.update(
+                self,
+                "procs",
                 completed=self.proc_tasks_done,
             )
             if task.successful():
-                self.workflow.progress_bars[self].update(
+                self.workflow.progress_bars.update(
+                    self,
                     "items",
                     completed=self.items_done,
                 )
 
     def refresh_progress_bars(self):
-        self.workflow.progress_bars[self].update(
+        self.workflow.progress_bars.update(
+            self,
             "items",
             total=self.items_total,
         )
-        self.workflow.progress_bars[self].update(
-            "proc",
+        self.workflow.progress_bars.update(
+            self,
+            "procs",
             total=self.proc_tasks_total,
         )
-        self.workflow.progress_bars[self].update(
-            "accum",
+        self.workflow.progress_bars.update(
+            self,
+            "accums",
             total=self.accum_tasks_total,
         )
-        self.workflow.progress_bars[self].refresh()
+        self.workflow.progress_bars.refresh()
 
 
     def __hash__(self):
@@ -372,7 +389,6 @@ class DatasetCounts:
     items_total: int
 
     def __post_init__(self):
-        self.all_proc_submitted = False
         self.pending_accumulation = []
         self.output_file = None
         self.result = None
@@ -384,6 +400,10 @@ class DatasetCounts:
         self.proc_tasks_submitted = 0
         self.accum_tasks_done = 0
         self.accum_tasks_submitted = 0
+
+    @property
+    def all_proc_done(self):
+        return self.items_done == self.items_total
 
     def add_completed(self, task):
         self.active.remove(task.id)
@@ -414,16 +434,21 @@ class DatasetCounts:
                 r = self.processor.workflow.result_postprocess(self.processor.name, self.name, r)
             # self.result = r
             print(f"{self.processor.name}#{self.name} completed!")
-            print(f"{self.items_done}/{self.processor.items_done}/{self.processor.items_submitted} items done")
-            print(f"{self.proc_tasks_done}/{self.processor.proc_tasks_done}/{self.processor.proc_tasks_submitted} processing tasks done")
-            print(f"{self.accum_tasks_done}/{self.processor.accum_tasks_done}/{self.processor.accum_tasks_submitted} accumulation tasks done")
-            self.processor.workflow.progress_bars[self.processor].advance("datasets", 1)
+            # print(f"{self.items_done}/{self.processor.items_done}/{self.processor.items_submitted} items done")
+            # print(f"{self.proc_tasks_done}/{self.processor.proc_tasks_done}/{self.processor.proc_tasks_submitted} processing tasks done")
+            # print(f"{self.accum_tasks_done}/{self.processor.accum_tasks_done}/{self.processor.accum_tasks_submitted} accumulation tasks done")
+
+            self.processor.workflow.progress_bars.advance(self.processor, "datasets", 1)
+            for bar_type in ["procs", "accums", "items"]:
+                self.processor.workflow.progress_bars.stop_task(self.processor, bar_type)
+
 
     def ready_for_result(self):
         return (
-            self.all_proc_submitted
+            self.all_proc_done
             and len(self.active) == 0
             and len(self.pending_accumulation) == 0
+            and self.items_total == self.items_done
         )
 
 
@@ -575,7 +600,7 @@ class DynMapRedTask(abc.ABC):
             self.processor,
             self.dataset,
             datum if datum is not None else self.datum,
-            size=1 if input_tasks is None else self.size,
+            size=self.size if input_tasks is None else len(input_tasks),
             input_tasks=input_tasks if input_tasks is not None else self.input_tasks,
             checkpoint=self.checkpoint,
             final=self.final,
@@ -818,7 +843,6 @@ class DynMapReduce:
             )
 
         self._set_env()
-        self.progress_bars = {}
 
     def __getattr__(self, attr):
         # redirect any unknown method to inner manager
@@ -873,7 +897,7 @@ class DynMapReduce:
 
         final = False
         accum_size = max(2, self.accumulation_size)
-        if ds.all_proc_submitted and len(ds.active) == 0:
+        if ds.all_proc_done and len(ds.active) == 0:
             if len(ds.pending_accumulation) <= accum_size:
                 final = True
         elif len(ds.pending_accumulation) < 2 * accum_size:
@@ -902,8 +926,9 @@ class DynMapReduce:
         self.submit(t)
 
     @property
-    def all_proc_submitted(self):
-        return all(p.all_proc_submitted for p in reversed(self.processors.values()))
+    def all_proc_done(self):
+        return all(p.all_proc_done for p in reversed(self.processors.values()))
+
 
     def should_checkpoint(self, t):
         if t.checkpoint or t.final:
@@ -912,12 +937,12 @@ class DynMapReduce:
             return self.checkpoint_fn(t)
         return False
 
-    def resubmit(self, t):
-        print(f"resubmitting task {t.description()} {t.datum}\n{t.std_output}")
+    def resubmit(self, task):
+        print(f"resubmitting task {task.description()} {task.datum}\n{task.std_output}")
 
-        self.manager.undeclare_file(t.result_file)
+        self.manager.undeclare_file(task.result_file)
 
-        new_attempts = t.create_new_attempts()
+        new_attempts = task.create_new_attempts()
         if not new_attempts:
             return False
 
@@ -970,13 +995,10 @@ class DynMapReduce:
         for p in self.processors.values():
             for ds_name, ds_specs in datasets.items():
                 ds = p.dataset(ds_name)
-                ds.all_proc_submitted = False
-
                 gen = self.source_preprocess(ds_specs, **args)
                 for datum, size in gen:
                     ds.items_submitted += size
                     yield (p, ds, datum, size)
-                p.dataset(ds_name).all_proc_submitted = True
 
     def need_to_submit(self):
         max_active = self.max_tasks_active if self.max_tasks_active else sys.maxsize
@@ -1009,8 +1031,11 @@ class DynMapReduce:
                 self.add_fetch_task(task, final=False)
             else:
                 self.add_accum_task(task)
+        else:
+            if not self.resubmit(task):
+                raise RuntimeError(f"task {task.datum} could not be completed\n{task.std_output}\n---\n{task.output}")
 
-            task.cleanup()
+        task.cleanup()
 
     def refresh_progress_bars(self):
         for p in self.processors.values():
@@ -1021,12 +1046,12 @@ class DynMapReduce:
         remote_executor=None,
         remote_executor_args=None,
     ):
+        self.progress_bars = ProgressBar()
         for p in self.processors.values():
-            self.progress_bars[p] = ProgressBar()
-            self.progress_bars[p].add_task("datasets", f"{p.name}(ds)", total=len(self.data["datasets"]))
-            self.progress_bars[p].add_task("proc", f"{p.name}(procs)", total=p.proc_tasks_total)
-            self.progress_bars[p].add_task("accum", f"{p.name}(accums)", total=p.accum_tasks_total)
-            self.progress_bars[p].add_task("items", f"{p.name}(items)", total=p.items_total)
+            self.progress_bars.add_task(p, "datasets", total=len(self.data["datasets"]))
+            self.progress_bars.add_task(p, "procs", total=p.proc_tasks_total)
+            self.progress_bars.add_task(p, "accums", total=p.accum_tasks_total)
+            self.progress_bars.add_task(p, "items", total=p.items_total)
 
         result = self._compute_internal(remote_executor, remote_executor_args)
         self.refresh_progress_bars()
@@ -1045,23 +1070,23 @@ class DynMapReduce:
             to_submit = self.need_to_submit()
             if to_submit > 0:
                 for proc_name, ds_name, datum, size in item_generator:
-                    t = DynMapRedProcessingTask(
+                    task = DynMapRedProcessingTask(
                         self, proc_name, ds_name, datum, size=size, input_tasks=None
                     )
-                    self.submit(t)
+                    self.submit(task)
                     to_submit -= 1
                     if to_submit < 1:
                         break
 
-            t = self.wait(5)
-            if t:
-                self.add_completed(t)
-                if not t.successful() and not self.resubmit(t):
-                    raise RuntimeError(
-                        f"task {t.datum} could not be completed\n{t.std_output}\n---\n{t.output}"
-                    )
+            task = self.wait(5)
+            if task:
+                self.add_completed(task)
+            # else:
+            #     for p in self.processors.values():
+            #         for ds in p._datasets.values():
+            #             print(f"{p.name},{ds.name}: {ds.items_done}, {ds.items_submitted}, {len(ds.active)}, {len(ds.pending_accumulation)}")
 
-            if self.all_proc_submitted and self.manager.empty():
+            if self.all_proc_done and self.manager.empty():
                 break
 
         if self._graph_file:
@@ -1097,20 +1122,20 @@ class ProgressBar:
         if enabled:
             self._prog.start()
 
-    def add_task(self, bar_type, desc, *args, **kwargs):
-        b = self._prog.add_task(desc, *args, **kwargs)
-        self._ids[bar_type] = b
-        self._prog.start_task(self._ids[bar_type])
+    def add_task(self, p, bar_type, *args, **kwargs):
+        b = self._prog.add_task(bar_type, *args, **kwargs)
+        self._ids.setdefault(p, {})[bar_type] = b
+        self._prog.start_task(self._ids[p][bar_type])
         return b
 
-    def stop_task(self, bar_type, *args, **kwargs):
-        return self._prog.stop_task(self._ids[bar_type], *args, **kwargs)
+    def stop_task(self, p, bar_type, *args, **kwargs):
+        return self._prog.stop_task(self._ids[p][bar_type], *args, **kwargs)
 
-    def update(self, bar_type, *args, **kwargs):
-        return self._prog.update(self._ids[bar_type], *args, **kwargs)
+    def update(self, p, bar_type, *args, **kwargs):
+        return self._prog.update(self._ids[p][bar_type], *args, **kwargs)
 
-    def advance(self, bar_type, *args, **kwargs):
-        result = self._prog.advance(self._ids[bar_type], *args, **kwargs)
+    def advance(self, p, bar_type, *args, **kwargs):
+        result = self._prog.advance(self._ids[p][bar_type], *args, **kwargs)
         return result
 
     def refresh(self, *args, **kwargs):
