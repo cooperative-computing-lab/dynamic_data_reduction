@@ -266,17 +266,14 @@ class ProcCounts:
         items_total = self.items_total
         items_submitted = self.items_submitted
         items_done = self.items_done
-        tasks_done = self.proc_tasks_done
         tasks_submitted = self.proc_tasks_submitted
 
         if items_total == 0:
             return 0
         elif items_submitted == 0:
             return 1
-        elif items_done == 0:
-            return math.floor(items_total / items_submitted) * tasks_submitted
         else:
-            return math.floor(items_total / items_done) * tasks_submitted
+            return math.floor(items_total / items_submitted) * tasks_submitted
 
     @property
     def accum_tasks_done(self):
