@@ -14,6 +14,8 @@ results_dir = "/cephfs/disc2/users/btovar/cortado"
 
 
 def source_preprocess(dataset_info, **source_args):
+    """ Called at the manager. It splits single file specifications into multiple chunks specifications. """
+
     def file_info_preprocess(file_info):
         import math
         file_chunk_size = source_args.get("file_step_size",  100000)
@@ -38,6 +40,8 @@ def source_preprocess(dataset_info, **source_args):
 
 
 def source_postprocess(chunk_info, **source_args):
+    """ Called at the worker. Rechunks chunk specification to use many cores,
+    and created a NanoEventsFactory per chunk. """
     from coffea.nanoevents import NanoEventsFactory, NanoAODSchema
     import os
 
@@ -93,11 +97,7 @@ def source_postprocess(chunk_info, **source_args):
 
 
 def skimmer(events):
-    # import random
-
-    # if random.random() < 0.2:
-    #     raise Exception("test failure")
-
+    """ Executes at the worker. The actual computation. It receives the event.events() from source_postprocess. """
     import cortado.modules.skim_tools as skim_tools
     skimmed = skim_tools.make_skimmed_events(events)
     skimmed = skim_tools.uproot_writeable(skimmed)
@@ -106,6 +106,7 @@ def skimmer(events):
 
 
 def result_postprocess(processor_name, dataset_name, skim):
+    """ Executes at the manager. Saves python object into parquet file. """
     if skim is not None:
         dir = f"{results_dir}/{processor_name}/"
         pathlib.Path(dir).mkdir(parents=True, exist_ok=True)
@@ -115,8 +116,16 @@ def result_postprocess(processor_name, dataset_name, skim):
             f"{dir}/{dataset_name}.parquet"
         )
 
+        # uproot.write(
+        #     f"{dir}/{dataset_name}.root",
+        #     skim,
+        #     mode="update",
+        #     compression=uproot.ZSTD(1),
+        # )
+
 
 def accumulator(a, b):
+    """ Executes at the worker. Merges two awkward arrays from independent skim results. """
     import awkward as ak
     return ak.concatenate(a, b, axis=1)
 
@@ -134,6 +143,7 @@ def checkpoint_fn(t):
 
 
 def coffea_preprocess_to_dynmapred(data):
+    """ Executes at the manager. Converts coffea style preprocessed data into DynMapReduce data. """
     new_data = {}
 
     for (i, (ds_name, ds_specs)) in enumerate(data.items()):
