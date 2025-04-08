@@ -181,15 +181,43 @@ def coffea_preprocess_to_dynmapred(data):
 
 
 if __name__ == "__main__":
-    with open("samples_paper_preprocessed.json", "r") as f:
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Run DynMapReduce processing')
+    parser.add_argument('--accumulation_size', type=int, default=10, help='Accumulation size')
+    parser.add_argument('--checkpoint_accumulations', type=bool, default=False, help='Checkpoint accumulations')
+    parser.add_argument('--checkpoint_distance', type=int, default=3, help='Checkpoint distance')
+    parser.add_argument('--checkpoint_time', type=int, default=1800, help='Checkpoint time')
+    parser.add_argument('--cores', type=int, default=1, help='Number of cores per worker')
+    parser.add_argument('--file_replication', type=int, default=4, help='File replication factor')
+    parser.add_argument('--json_file', type=str, required=True, help='Input JSON file with datasets information')
+    parser.add_argument('--manager_name', type=str, default=f"{getpass.getuser()}-cortado-dynmapred", help='Vine manager name')
+    parser.add_argument('--max_task_retries', type=int, default=50, help='Maximum task retries')
+    parser.add_argument('--max_tasks_active', type=int, default=4000, help='Maximum active tasks')
+    parser.add_argument('--port_range', type=str, default='9128:9129', help='Vine manager port range (colon-separated)')
+    parser.add_argument('--prefix', type=str, default='', help='Prefix for input files')
+    parser.add_argument('--results_dir', type=str, required=True, default=results_dir, help='Directory for results')
+    parser.add_argument('--staging_path', type=str, default=f"/tmp/{getpass.getuser()}", help='Staging path')
+    parser.add_argument('--x509_proxy', type=str, default=f"/tmp/x509up_u{os.getuid()}", help='X509 proxy')
+
+    args = parser.parse_args()
+    json_file = args.json_file
+
+    with open(json_file, "r") as f:
         data = json.load(f)
 
     data = coffea_preprocess_to_dynmapred(data)
 
-    mgr = vine.Manager(port=[9128, 9129], name=f"{getpass.getuser()}-cortado-dynmapred", staging_path=f"/tmp/{getpass.getuser()}")
+    port_range = [int(p) for p in args.port_range.split(':')]
+    mgr = vine.Manager(port=port_range, name=f"{getpass.getuser()}-cortado-dynmapred", staging_path=args.staging_path)
     mgr.tune("hungry-minimum", 1)
     mgr.enable_monitoring(watchdog=False)
-    # mgr.set_password_file("vine.password")
+
+    # Check if the X509 proxy file exists
+    x509_proxy = args.x509_proxy
+    if not os.path.exists(args.x509_proxy):
+        print(f"Warning: X509 proxy file {args.x509_proxy} does not exist. Setting to None.")
+        x509_proxy = None
 
     dmr = DynMapReduce(
         mgr,
@@ -200,16 +228,16 @@ if __name__ == "__main__":
         },
         result_postprocess=result_postprocess,
         accumulator=accumulator,
-        accumulation_size=10,
-        file_replication=4,
-        max_tasks_active=4000,
-        max_task_retries=50,
-        checkpoint_accumulations=False,
-        x509_proxy=f"/tmp/x509up_u{os.getuid()}",
+        accumulation_size=args.accumulation_size,
+        file_replication=args.file_replication,
+        max_tasks_active=args.max_tasks_active,
+        max_task_retries=args.max_task_retries,
+        checkpoint_accumulations=args.checkpoint_accumulations,
+        x509_proxy=x509_proxy,
         checkpoint_fn=checkpoint_fn,
         extra_files=[],
-        resources_processing={"cores": 1},
-        resources_accumualting={"cores": 1},
+        resources_processing={"cores": args.cores},
+        resources_accumualting={"cores": args.cores},
         results_directory=f"{results_dir}/raw/",
         data=data,
     )
