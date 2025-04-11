@@ -10,6 +10,8 @@ import pprint
 import getpass
 import os
 
+from coffea.nanoevents import NanoAODSchema
+
 results_dir = "/cephfs/disc2/users/btovar/cortado"
 
 
@@ -18,7 +20,10 @@ def source_preprocess(dataset_info, **source_args):
 
     def file_info_preprocess(file_info):
         import math
-        file_chunk_size = source_args.get("file_step_size",  100000)
+        file_chunk_size = source_args.get("step_size", 100000)
+        object_path = source_args.get("object_path", "Events")
+
+        file_chunk_size = source_args["step_size"]
         num_entries = file_info["num_entries"]
         chunk_adapted = math.ceil(num_entries / math.ceil(num_entries / file_chunk_size))
         start = 0
@@ -26,7 +31,7 @@ def source_preprocess(dataset_info, **source_args):
             end = min(start + chunk_adapted, num_entries)
             chunk_info = {
                 "file": file_info["file"],
-                "object_path": "Events",
+                "object_path": object_path,
                 "entry_start": start,
                 "entry_stop": end,
                 "num_entries": end - start,
@@ -39,7 +44,7 @@ def source_preprocess(dataset_info, **source_args):
         yield from file_info_preprocess(file_info)
 
 
-def source_postprocess(chunk_info, **source_args):
+def source_postprocess(chunk_info, **nanoevents_factory_args):
     """ Called at the worker. Rechunks chunk specification to use many cores,
     and created a NanoEventsFactory per chunk. """
     from coffea.nanoevents import NanoEventsFactory, NanoAODSchema
@@ -57,16 +62,14 @@ def source_postprocess(chunk_info, **source_args):
 
         return [s + 1] * r + [s] * (c - r)
 
-    cores = source_args.get("cores", int(os.environ.get("CORES", 1)))
-    cores_factor = 1
-
+    cores = int(os.environ.get("CORES", 1))
     num_entries = chunk_info["num_entries"]
 
     start = chunk_info["entry_start"]
     end = chunk_info["entry_stop"]
     steps = [start]
 
-    for step in step_lengths(num_entries, cores * cores_factor):
+    for step in step_lengths(num_entries, cores):
         if step < 1:
             break
         start += step
@@ -74,8 +77,6 @@ def source_postprocess(chunk_info, **source_args):
     assert start == end
 
     chunk_info["metadata"]["cores"] = cores
-    chunk_info["metadata"]["cores_factor"] = cores_factor
-
     steps = [chunk_info["entry_start"], chunk_info["entry_stop"]]
 
     d = {
@@ -86,11 +87,14 @@ def source_postprocess(chunk_info, **source_args):
         }
     }
 
+    nanoevents_factory_args.setdefault("schemaclass", NanoAODSchema)
+    nanoevents_factory_args.setdefault("uproot_options", {"timeout": 300})
+    nanoevents_factory_args.setdefault("metadata", {})
+    nanoevents_factory_args["metadata"].update(chunk_info["metadata"])
+
     events = NanoEventsFactory.from_root(
         d,
-        schemaclass=NanoAODSchema,
-        uproot_options={"timeout": 300},
-        metadata=dict(chunk_info["metadata"]),
+        **nanoevents_factory_args,
     )
 
     return events.events()
@@ -179,31 +183,30 @@ def coffea_preprocess_to_dynmapred(data):
     return {"datasets": new_data, "size": total_events}
 
 
-
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description='Run DynMapReduce processing')
-    parser.add_argument('--accumulation_size', type=int, default=10, help='Accumulation size')
-    parser.add_argument('--checkpoint_accumulations', type=bool, default=False, help='Checkpoint accumulations')
-    parser.add_argument('--checkpoint_distance', type=int, default=3, help='Checkpoint distance')
-    parser.add_argument('--checkpoint_time', type=int, default=1800, help='Checkpoint time')
+    parser.add_argument('--accumulation-size', type=int, default=10, help='Accumulation size')
+    parser.add_argument('--checkpoint-accumulations', type=bool, default=False, help='Checkpoint accumulations')
+    parser.add_argument('--checkpoint-distance', type=int, default=3, help='Checkpoint distance')
+    parser.add_argument('--checkpoint-time', type=int, default=1800, help='Checkpoint time')
     parser.add_argument('--cores', type=int, default=1, help='Number of cores per worker')
-    parser.add_argument('--file_replication', type=int, default=4, help='File replication factor')
-    parser.add_argument('--json_file', type=str, required=True, help='Input JSON file with datasets information')
-    parser.add_argument('--manager_name', type=str, default=f"{getpass.getuser()}-cortado-dynmapred", help='Vine manager name')
-    parser.add_argument('--max_task_retries', type=int, default=50, help='Maximum task retries')
-    parser.add_argument('--max_tasks_active', type=int, default=4000, help='Maximum active tasks')
-    parser.add_argument('--port_range', type=str, default='9128:9129', help='Vine manager port range (colon-separated)')
+    parser.add_argument('--file-replication', type=int, default=4, help='File replication factor')
+    parser.add_argument('--preprocessed-file', type=str, required=True, help='Input JSON file with datasets information')
+    parser.add_argument('--manager-name', type=str, default=f"{getpass.getuser()}-cortado-dynmapred", help='Vine manager name')
+    parser.add_argument('--max-task-retries', type=int, default=50, help='Maximum task retries')
+    parser.add_argument('--max-tasks-active', type=int, default=4000, help='Maximum active tasks')
+    parser.add_argument('--port-range', type=str, default='9128:9129', help='Vine manager port range (colon-separated)')
     parser.add_argument('--prefix', type=str, default='', help='Prefix for input files')
-    parser.add_argument('--results_dir', type=str, required=True, default=results_dir, help='Directory for results')
-    parser.add_argument('--staging_path', type=str, default=f"/tmp/{getpass.getuser()}", help='Staging path')
-    parser.add_argument('--x509_proxy', type=str, default=f"/tmp/x509up_u{os.getuid()}", help='X509 proxy')
+    parser.add_argument('--results-dir', type=str, required=True, default=results_dir, help='Directory for results')
+    parser.add_argument('--staging-path', type=str, default=f"/tmp/{getpass.getuser()}", help='Staging path')
+    parser.add_argument('--x509-proxy', type=str, default=f"/tmp/x509up_u{os.getuid()}", help='X509 proxy')
 
     args = parser.parse_args()
-    json_file = args.json_file
+    preprocessed_file = args.preprocessed_file
 
-    with open(json_file, "r") as f:
+    with open(preprocessed_file, "r") as f:
         data = json.load(f)
 
     data = coffea_preprocess_to_dynmapred(data)
@@ -222,10 +225,17 @@ if __name__ == "__main__":
     dmr = DynMapReduce(
         mgr,
         source_preprocess=source_preprocess,
+        source_preprocess_args={"step_size": 100000, "object_path": "Events"},
+
         source_postprocess=source_postprocess,
+        source_postprocess_args={"schemaclass": NanoAODSchema, "uproot_options": {"timeout": 300}},
+
         processors={
             "skimmer": skimmer,
         },
+
+        remote_executor_args={"scheduler": "threads"},
+
         result_postprocess=result_postprocess,
         accumulator=accumulator,
         accumulation_size=args.accumulation_size,

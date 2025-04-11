@@ -2,7 +2,6 @@
 
 import dask.array as da
 import cloudpickle
-import json
 import lz4.frame
 import sys
 import math
@@ -15,6 +14,7 @@ import abc
 import dataclasses
 import concurrent.futures
 import multiprocessing as mp
+from concurrent.futures import ThreadPoolExecutor
 
 import rich.progress
 from rich import print
@@ -60,16 +60,13 @@ def wrap_processing(
     datum,
     processor_args,
     source_postprocess_args,
-    local_executor_args=None,
+    remote_executor_args,
 ):
     import os
     import warnings
 
-    if not local_executor_args:
-        local_executor_args = {}
-
-    local_executor_args.setdefault("num_workers", int(os.environ.get("CORES", 1)))
-    scheduler = local_executor_args.get("scheduler", "threads")
+    remote_executor_args.setdefault("num_workers", int(os.environ.get("CORES", 1)))
+    remote_executor_args.setdefault("scheduler", "threads")
 
     if processor_args is None:
         processor_args = {}
@@ -80,7 +77,8 @@ def wrap_processing(
     datum_post = source_postprocess(datum, **source_postprocess_args)
 
     # Configure based on the scheduler type
-    num_workers = local_executor_args["num_workers"]
+    num_workers = remote_executor_args["num_workers"]
+    scheduler = remote_executor_args["scheduler"]
 
     # Process the data through the processor
     to_maybe_compute = processor(datum_post, **processor_args)
@@ -92,8 +90,6 @@ def wrap_processing(
         if scheduler == "cloudpickle_processes" and num_workers > 0:
             # Use our custom ProcessPoolExecutor with cloudpickle
             try:
-                # import multiprocessing as mp
-                # mp.freeze_support()
                 with CloudpickleProcessPoolExecutor(
                     max_workers=num_workers
                 ) as executor:
@@ -101,9 +97,10 @@ def wrap_processing(
                     result = to_maybe_compute.compute(
                         scheduler="processes",
                         pool=executor,
-                        optimize_graph=False,
+                        optimize_graph=True,
                         num_workers=num_workers,
                         max_height=None,
+                        max_width=1,
                         subgraphs=False,
                     )
             except Exception as e:
@@ -112,9 +109,12 @@ def wrap_processing(
                 )
                 # result = to_maybe_compute.compute(num_workers=num_workers)
                 raise e
-        else:
-            # Default case - use dask's default scheduler
-            result = to_maybe_compute.compute(num_workers=num_workers)
+        elif scheduler == "threads" or scheduler is None:
+            if num_workers < 2:
+                result = to_maybe_compute.compute(scheduler="threads", num_workers=1)
+            else:
+                with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                    result = to_maybe_compute.compute(scheduler="threads", pool=executor, num_workers=num_workers)
     else:
         # If not a Dask object, just use the result directly
         result = to_maybe_compute
@@ -139,9 +139,8 @@ def accumulate(accumulator, result_names, accumulator_args=None, to_file=True):
         if out is None:
             out = other
         else:
-            # out = accumulator(out, other, **accumulator_args)
             try:
-                out = accumulator(out, other)
+                out = accumulator(out, other, **accumulator_args)
             except TypeError:
                 pass
             del other
@@ -265,7 +264,6 @@ class ProcCounts:
     def proc_tasks_total(self):
         items_total = self.items_total
         items_submitted = self.items_submitted
-        items_done = self.items_done
         tasks_submitted = self.proc_tasks_submitted
 
         if items_total == 0:
@@ -273,7 +271,7 @@ class ProcCounts:
         elif items_submitted == 0:
             return 1
         else:
-            return math.floor(items_total / items_submitted) * tasks_submitted
+            return math.floor((items_total / items_submitted) * tasks_submitted)
 
     @property
     def accum_tasks_done(self):
@@ -307,7 +305,6 @@ class ProcCounts:
 
     def __hash__(self):
         return id(self)
-
 
     def add_dataset(self, dataset_name, dataset_specs):
         self._datasets[dataset_name] = DatasetCounts(
@@ -374,10 +371,6 @@ class ProcCounts:
         self.workflow.progress_bars.refresh()
 
 
-    def __hash__(self):
-        return id(self)
-
-
 @dataclasses.dataclass
 class DatasetCounts:
     processor: ProcCounts
@@ -422,7 +415,6 @@ class DatasetCounts:
 
         self.active.add(task.id)
 
-
     def set_result(self, task):
         self.output_file = task.result_file
         with lz4.frame.open(self.output_file.source(), "rb") as fp:
@@ -438,7 +430,6 @@ class DatasetCounts:
             self.processor.workflow.progress_bars.advance(self.processor, "datasets", 1)
             for bar_type in ["procs", "accums", "items"]:
                 self.processor.workflow.progress_bars.stop_task(self.processor, bar_type)
-
 
     def ready_for_result(self):
         return (
@@ -643,6 +634,7 @@ class DynMapRedProcessingTask(DynMapRedTask):
             datum,
             self.manager.processor_args,
             self.manager.source_postprocess_args,
+            self.manager.remote_executor_args,
         )
 
         for k, v in self.manager.resources_processing.items():
@@ -761,6 +753,7 @@ class DynMapReduce:
     max_tasks_active: Optional[int] = None
     max_tasks_submit_batch: Optional[int] = None
     processor_args: Optional[Mapping[str, Any]] = None
+    remote_executor_args: Optional[Mapping[str, Any]] = None
     resources_accumualting: Optional[Mapping[str, float]] = None
     resources_processing: Optional[Mapping[str, float]] = None
     results_directory: str = "results"
@@ -875,7 +868,6 @@ class DynMapReduce:
                 f"accumulating#{ds}", self.resources_accumualting
             )
 
-
     def add_fetch_task(self, target, final):
         t = DynMapRedFetchTask(
             self,
@@ -925,7 +917,6 @@ class DynMapReduce:
     @property
     def all_proc_done(self):
         return all(p.all_proc_done for p in reversed(self.processors.values()))
-
 
     def should_checkpoint(self, t):
         if t.checkpoint or t.final:
@@ -1038,11 +1029,7 @@ class DynMapReduce:
         for p in self.processors.values():
             p.refresh_progress_bars()
 
-    def compute(
-        self,
-        remote_executor=None,
-        remote_executor_args=None,
-    ):
+    def compute(self):
         self.progress_bars = ProgressBar()
         for p in self.processors.values():
             self.progress_bars.add_task(p, "datasets", total=len(self.data["datasets"]))
@@ -1050,16 +1037,12 @@ class DynMapReduce:
             self.progress_bars.add_task(p, "accums", total=p.accum_tasks_total)
             self.progress_bars.add_task(p, "items", total=p.items_total)
 
-        result = self._compute_internal(remote_executor, remote_executor_args)
+        result = self._compute_internal()
         self.refresh_progress_bars()
 
         return result
 
-    def _compute_internal(
-        self,
-        remote_executor=None,
-        remote_executor_args=None,
-    ):
+    def _compute_internal(self):
         self._set_resources()
         item_generator = self.generate_processing_args(self.data["datasets"])
 
@@ -1105,12 +1088,12 @@ class ProgressBar:
     @staticmethod
     def make_progress_bar():
         return rich.progress.Progress(
-        rich.progress.TextColumn("{task.description}"),
-        rich.progress.BarColumn(),
-        rich.progress.MofNCompleteColumn(),
-        rich.progress.TimeRemainingColumn(),
-        transient=False,
-        auto_refresh=True,
+            rich.progress.TextColumn("{task.description}"),
+            rich.progress.BarColumn(),
+            rich.progress.MofNCompleteColumn(),
+            rich.progress.TimeRemainingColumn(),
+            transient=False,
+            auto_refresh=True,
         )
 
     def __init__(self, enabled=True):
@@ -1161,6 +1144,7 @@ class ProgressBar:
     #     "]",
     #     auto_refresh=False,
     # )
+
 
 if __name__ == "__main__":
     import itertools
