@@ -109,7 +109,7 @@ def skimmer(events):
     return skimmed
 
 
-def result_postprocess(processor_name, dataset_name, skim):
+def result_postprocess(processor_name, dataset_name, results_dir, skim):
     """ Executes at the manager. Saves python object into parquet file. """
     if skim is not None:
         dir = f"{results_dir}/{processor_name}/"
@@ -150,7 +150,7 @@ def coffea_preprocess_to_dynmapred(data):
     """ Executes at the manager. Converts coffea style preprocessed data into DynMapReduce data. """
     new_data = {}
 
-    for (i, (ds_name, ds_specs)) in enumerate(data.items()):
+    for (i, (ds_name, ds_specs)) in enumerate(reversed(data.items())):
         # if i > 5:
         #     break
         new_specs = []
@@ -201,6 +201,7 @@ if __name__ == "__main__":
     parser.add_argument('--prefix', type=str, default='', help='Prefix for input files')
     parser.add_argument('--results-dir', type=str, required=True, default=results_dir, help='Directory for results')
     parser.add_argument('--staging-path', type=str, default=f"/tmp/{getpass.getuser()}", help='Staging path')
+    parser.add_argument('--step-size', type=int, default=100000, help='Number of events to process together.')
     parser.add_argument('--x509-proxy', type=str, default=f"/tmp/x509up_u{os.getuid()}", help='X509 proxy')
 
     args = parser.parse_args()
@@ -225,7 +226,7 @@ if __name__ == "__main__":
     dmr = DynMapReduce(
         mgr,
         source_preprocess=source_preprocess,
-        source_preprocess_args={"step_size": 100000, "object_path": "Events"},
+        source_preprocess_args={"step_size": args.step_size, "object_path": "Events"},
 
         source_postprocess=source_postprocess,
         source_postprocess_args={"schemaclass": NanoAODSchema, "uproot_options": {"timeout": 300}},
@@ -248,7 +249,7 @@ if __name__ == "__main__":
         extra_files=[],
         resources_processing={"cores": args.cores},
         resources_accumualting={"cores": args.cores},
-        results_directory=f"{results_dir}/raw/",
+        results_directory=f"{args.results_dir}/raw/",
         data=data,
     )
 

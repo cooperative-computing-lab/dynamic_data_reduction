@@ -271,7 +271,7 @@ class ProcCounts:
         elif items_submitted == 0:
             return 1
         else:
-            return math.floor((items_total / items_submitted) * tasks_submitted)
+            return math.ceil((items_total / items_submitted) * tasks_submitted)
 
     @property
     def accum_tasks_done(self):
@@ -420,7 +420,8 @@ class DatasetCounts:
         with lz4.frame.open(self.output_file.source(), "rb") as fp:
             r = cloudpickle.load(fp)
             if self.processor.workflow.result_postprocess:
-                r = self.processor.workflow.result_postprocess(self.processor.name, self.name, r)
+                dir = self.processor.workflow.results_directory
+                r = self.processor.workflow.result_postprocess(self.processor.name, self.name, dir, r)
             # self.result = r
             print(f"{self.processor.name}#{self.name} completed!")
             # print(f"{self.items_done}/{self.processor.items_done}/{self.processor.items_submitted} items done")
@@ -757,7 +758,7 @@ class DynMapReduce:
     resources_accumualting: Optional[Mapping[str, float]] = None
     resources_processing: Optional[Mapping[str, float]] = None
     results_directory: str = "results"
-    result_postprocess: Optional[Callable[[str, H], Any]] = None
+    result_postprocess: Optional[Callable[[str, str, str, H], Any]] = None
     source_postprocess: Callable[[D], P] = identity_source_conector
     source_postprocess_args: Optional[Mapping[str, Any]] = None
     source_preprocess: Callable[[Any], D] = identity_source_preprocess
