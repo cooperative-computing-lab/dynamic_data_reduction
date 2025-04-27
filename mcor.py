@@ -224,7 +224,9 @@ if __name__ == "__main__":
         x509_proxy = None
 
     dmr = DynMapReduce(
-        mgr,
+        mgr,           # taskvine manager
+        data=data,     # json, preprocessed from regular coffea: dataset, file, and num_entries
+
         source_preprocess=source_preprocess,
         source_preprocess_args={"step_size": args.step_size, "object_path": "Events"},
 
@@ -239,18 +241,21 @@ if __name__ == "__main__":
 
         result_postprocess=result_postprocess,
         accumulator=accumulator,
+
+        checkpoint_accumulations=args.checkpoint_accumulations,
+        checkpoint_fn=checkpoint_fn,
+
+        x509_proxy=x509_proxy,
+
         accumulation_size=args.accumulation_size,
         file_replication=args.file_replication,
         max_tasks_active=args.max_tasks_active,
         max_task_retries=args.max_task_retries,
-        checkpoint_accumulations=args.checkpoint_accumulations,
-        x509_proxy=x509_proxy,
-        checkpoint_fn=checkpoint_fn,
         extra_files=[],
+
         resources_processing={"cores": args.cores},
         resources_accumualting={"cores": args.cores},
         results_directory=f"{args.results_dir}/raw/",
-        data=data,
     )
 
     result = dmr.compute()
