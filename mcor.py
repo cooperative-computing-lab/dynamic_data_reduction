@@ -153,6 +153,10 @@ def coffea_preprocess_to_dynmapred(data):
     for (i, (ds_name, ds_specs)) in enumerate(reversed(data.items())):
         # if i > 5:
         #     break
+
+        if ds_name != 'EGamma__Run2018D-UL2018_MiniAODv2_NanoAODv9-v3__NANOAOD':
+            continue
+
         new_specs = []
         extra_data = dict(ds_specs)
         del extra_data["files"]
@@ -200,7 +204,7 @@ if __name__ == "__main__":
     parser.add_argument('--port-range', type=str, default='9128:9129', help='Vine manager port range (colon-separated)')
     parser.add_argument('--prefix', type=str, default='', help='Prefix for input files')
     parser.add_argument('--results-dir', type=str, required=True, default=results_dir, help='Directory for results')
-    parser.add_argument('--staging-path', type=str, default=f"/tmp/{getpass.getuser()}", help='Staging path')
+    parser.add_argument('--run-info-path', type=str, default=f"/tmp/{getpass.getuser()}", help='Logs and staging path')
     parser.add_argument('--step-size', type=int, default=100000, help='Number of events to process together.')
     parser.add_argument('--x509-proxy', type=str, default=f"/tmp/x509up_u{os.getuid()}", help='X509 proxy')
 
@@ -213,7 +217,7 @@ if __name__ == "__main__":
     data = coffea_preprocess_to_dynmapred(data)
 
     port_range = [int(p) for p in args.port_range.split(':')]
-    mgr = vine.Manager(port=port_range, name=f"{getpass.getuser()}-cortado-dynmapred", staging_path=args.staging_path)
+    mgr = vine.Manager(port=port_range, name=f"{getpass.getuser()}-cortado-dynmapred", run_info_path=args.run_info_path)
     mgr.tune("hungry-minimum", 1)
     mgr.enable_monitoring(watchdog=False)
 
@@ -226,7 +230,6 @@ if __name__ == "__main__":
     dmr = DynMapReduce(
         mgr,           # taskvine manager
         data=data,     # json, preprocessed from regular coffea: dataset, file, and num_entries
-
         source_preprocess=source_preprocess,
         source_preprocess_args={"step_size": args.step_size, "object_path": "Events"},
 
@@ -251,6 +254,7 @@ if __name__ == "__main__":
         file_replication=args.file_replication,
         max_tasks_active=args.max_tasks_active,
         max_task_retries=args.max_task_retries,
+
         extra_files=[],
 
         resources_processing={"cores": args.cores},

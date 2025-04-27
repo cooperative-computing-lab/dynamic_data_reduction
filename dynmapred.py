@@ -24,12 +24,25 @@ import ndcctools.taskvine as vine
 
 from typing import Any, Callable, Hashable, Mapping, List, Optional, TypeVar, Self
 
-D = TypeVar("D")
-P = TypeVar("P")
-H = TypeVar("H")
+DataT = TypeVar("DataT")
+ProcT = TypeVar("ProcT")
+ResultT = TypeVar("ResultT")
 
 
 priority_separation = 1_000_000
+
+
+def checkpoint_standard(distance, time, custom_fn, task):
+    if distance is not None and task.checkpoint_distance > distance:
+        return True
+
+    elif time is not None and task.cumulative_exec_time > time:
+        return True
+
+    elif custom_fn is not None:
+        return custom_fn(task)
+
+    return False
 
 
 # Define a custom ProcessPoolExecutor that uses cloudpickle
@@ -227,7 +240,7 @@ def default_accumualtor(a, b, **extra_args):
 class ProcCounts:
     workflow: object  # really a DynMapReduce, but typing in python is a pain
     name: str
-    fn: Callable[[P], H]
+    fn: Callable[[ProcT], ResultT]
     priority: int = 0
 
     def __post_init__(self):
@@ -740,13 +753,15 @@ class DynMapRedAccumTask(DynMapRedTask):
 @dataclasses.dataclass
 class DynMapReduce:
     manager: vine.Manager
-    processors: Callable[[P], H] | List[Callable[[P], H]] | dict[str, Callable[[P], H]]
+    processors: Callable[[ProcT], ResultT] | List[Callable[[ProcT], ResultT]] | dict[str, Callable[[ProcT], ResultT]]
     data: dict[str, dict[str, Any]]
     accumulation_size: int = 10
-    accumulator: Callable[[H, H], H] = default_accumualtor
+    accumulator: Optional[Callable[[ResultT, ResultT], ResultT]] = default_accumualtor
     accumulator_args: Optional[Mapping[str, Any]] = None
     checkpoint_accumulations: bool = False
-    checkpoint_fn: Optional[Callable[[DynMapRedTask], bool]] = None
+    checkpoint_distance: Optional[int] = None
+    checkpoint_time: Optional[int] = None
+    checkpoint_custom_fn: Optional[Callable[[DynMapRedTask], bool]] = None
     environment: Optional[str] = None
     extra_files: Optional[list[str]] = None
     file_replication: int = 1
@@ -758,10 +773,10 @@ class DynMapReduce:
     resources_accumualting: Optional[Mapping[str, float]] = None
     resources_processing: Optional[Mapping[str, float]] = None
     results_directory: str = "results"
-    result_postprocess: Optional[Callable[[str, str, str, H], Any]] = None
-    source_postprocess: Callable[[D], P] = identity_source_conector
+    result_postprocess: Optional[Callable[[str, str, str, ResultT], Any]] = None
+    source_postprocess: Callable[[DataT], ProcT] = identity_source_conector
     source_postprocess_args: Optional[Mapping[str, Any]] = None
-    source_preprocess: Callable[[Any], D] = identity_source_preprocess
+    source_preprocess: Callable[[Any], DataT] = identity_source_preprocess
     source_preprocess_args: Optional[Mapping[str, Any]] = None
     x509_proxy: Optional[str] = None
     graph_output_file: bool = True
@@ -794,6 +809,9 @@ class DynMapReduce:
                     self, name(self.processors), self.processors, priority=priority_separation
                 )
             }
+
+        if self.accumulator is None:
+            self.accumulator = default_accumualtor
 
         if not self.resources_processing:
             self.resources_processing = {"cores": 1}
@@ -922,9 +940,7 @@ class DynMapReduce:
     def should_checkpoint(self, t):
         if t.checkpoint or t.final:
             return True
-        if self.checkpoint_fn:
-            return self.checkpoint_fn(t)
-        return False
+        return checkpoint_standard(self.checkpoint_distance, self.checkpoint_standard, self.checkpoint_custom_fn)
 
     def resubmit(self, task):
         print(f"resubmitting task {task.description()} {task.datum}\n{task.std_output}")
