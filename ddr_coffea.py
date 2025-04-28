@@ -12,9 +12,10 @@ from typing import Any, Callable, Hashable, Mapping, List, Optional, TypeVar, Se
 
 from coffea.nanoevents import NanoAODSchema
 
+
 def make_source_postprocess(schema, uproot_options):
-    """ Called at the worker. Rechunks chunk specification to use many cores,
-    and created a NanoEventsFactory per chunk. """
+    """Called at the worker. Rechunks chunk specification to use many cores,
+    and created a NanoEventsFactory per chunk."""
 
     def source_postprocess(chunk_info, **kwargs):
         from coffea.nanoevents import NanoEventsFactory
@@ -65,16 +66,17 @@ def make_source_postprocess(schema, uproot_options):
         )
 
         return events.events()
-    
+
     return source_postprocess
 
 
 def make_source_preprocess(step_size, object_path):
     def source_preprocess(dataset_info, **source_args):
-        """ Called at the manager. It splits single file specifications into multiple chunks specifications. """
+        """Called at the manager. It splits single file specifications into multiple chunks specifications."""
 
         def file_info_preprocess(file_info):
             import math
+
             num_entries = file_info["num_entries"]
 
             chunk_adapted = math.ceil(num_entries / math.ceil(num_entries / step_size))
@@ -96,7 +98,6 @@ def make_source_preprocess(step_size, object_path):
             yield from file_info_preprocess(file_info)
 
     return source_preprocess
-
 
 
 class CoffeaDynamicDataReduction(DynamicDataReduction):
@@ -126,16 +127,13 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         results_directory: str = "results",
         result_postprocess: Optional[Callable[[str, str, str, ResultT], Any]] = None,
         graph_output_file: bool = True,
-        
         remote_executor_args: Optional[Mapping[str, Any]] = None,
-
         x509_proxy: Optional[str] = None,
-
         schema: Optional[Any] = NanoAODSchema,
         step_size: int = 100_000,
         object_path: str = "Events",
         uproot_options: Optional[Mapping[str, Any]] = None,
-        ):
+    ):
 
         super().__init__(
             manager=manager,
@@ -159,26 +157,23 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             result_postprocess=result_postprocess,
             graph_output_file=graph_output_file,
             x509_proxy=x509_proxy,
-
             remote_executor_args=remote_executor_args,
-
             source_postprocess=make_source_postprocess(schema, uproot_options),
             source_preprocess=make_source_preprocess(step_size, object_path),
         )
 
-
     def from_coffea_preprocess(self, data):
-        """ Converts coffea style preprocessed data into DynMapReduce data. """
+        """Converts coffea style preprocessed data into DynMapReduce data."""
         new_data = {}
 
-        for (i, (ds_name, ds_specs)) in enumerate(reversed(data.items())):
+        for i, (ds_name, ds_specs) in enumerate(reversed(data.items())):
             new_specs = []
             extra_data = dict(ds_specs)
             del extra_data["files"]
 
             dataset_events = 0
             total_events = 0
-            for (j, (filename, file_info)) in enumerate(ds_specs["files"].items()):
+            for j, (filename, file_info) in enumerate(ds_specs["files"].items()):
                 if file_info["num_entries"] < 1:
                     continue
 

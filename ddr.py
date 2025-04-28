@@ -127,7 +127,9 @@ def wrap_processing(
                 result = to_maybe_compute.compute(scheduler="threads", num_workers=1)
             else:
                 with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                    result = to_maybe_compute.compute(scheduler="threads", pool=executor, num_workers=num_workers)
+                    result = to_maybe_compute.compute(
+                        scheduler="threads", pool=executor, num_workers=num_workers
+                    )
     else:
         # If not a Dask object, just use the result directly
         result = to_maybe_compute
@@ -231,6 +233,7 @@ def identity_source_conector(datum, **extra_args):
 def identity_source_preprocess(dataset_info, **extra_args):
     for datum in dataset_info:
         yield (datum, 1)
+
 
 def default_accumualtor(a, b, **extra_args):
     return a + b
@@ -434,13 +437,17 @@ class DatasetCounts:
             r = cloudpickle.load(fp)
             if self.processor.workflow.result_postprocess:
                 dir = self.processor.workflow.results_directory
-                r = self.processor.workflow.result_postprocess(self.processor.name, self.name, dir, r)
+                r = self.processor.workflow.result_postprocess(
+                    self.processor.name, self.name, dir, r
+                )
             self.result = r
             print(f"{self.processor.name}#{self.name} completed!")
 
             self.processor.workflow.progress_bars.advance(self.processor, "datasets", 1)
             for bar_type in ["procs", "accums", "items"]:
-                self.processor.workflow.progress_bars.stop_task(self.processor, bar_type)
+                self.processor.workflow.progress_bars.stop_task(
+                    self.processor, bar_type
+                )
 
     def ready_for_result(self):
         return (
@@ -750,7 +757,11 @@ class DynMapRedAccumTask(DynMapRedTask):
 @dataclasses.dataclass
 class DynamicDataReduction:
     manager: vine.Manager
-    processors: Callable[[ProcT], ResultT] | List[Callable[[ProcT], ResultT]] | dict[str, Callable[[ProcT], ResultT]]
+    processors: (
+        Callable[[ProcT], ResultT]
+        | List[Callable[[ProcT], ResultT]]
+        | dict[str, Callable[[ProcT], ResultT]]
+    )
     data: dict[str, dict[str, Any]]
     accumulation_size: int = 10
     accumulator: Optional[Callable[[ResultT, ResultT], ResultT]] = default_accumualtor
@@ -791,7 +802,9 @@ class DynamicDataReduction:
         if isinstance(self.processors, list):
             nps = (len(self.processors) + 1) * priority_separation
             self.processors = {
-                name(p): ProcCounts(self, name(p), p, priority=nps - i * priority_separation)
+                name(p): ProcCounts(
+                    self, name(p), p, priority=nps - i * priority_separation
+                )
                 for i, p in enumerate(self.processors)
             }
         elif isinstance(self.processors, dict):
@@ -803,7 +816,10 @@ class DynamicDataReduction:
         else:
             self.processors = {
                 name(self.processors): ProcCounts(
-                    self, name(self.processors), self.processors, priority=priority_separation
+                    self,
+                    name(self.processors),
+                    self.processors,
+                    priority=priority_separation,
                 )
             }
 
@@ -840,8 +856,10 @@ class DynamicDataReduction:
                 self._extra_files_map[os.path.basename(path)] = (
                     self.manager.declare_file(path, cache=True)
                 )
-        
-        self._extra_files_map[os.path.basename("ddr.py")] = self.manager.declare_file("ddr.py", cache=True)
+
+        self._extra_files_map[os.path.basename("ddr.py")] = self.manager.declare_file(
+            "ddr.py", cache=True
+        )
 
         self._wait_timeout = 5
         self._graph_file = None
@@ -942,7 +960,12 @@ class DynamicDataReduction:
     def should_checkpoint(self, task):
         if task.checkpoint or task.final:
             return True
-        return checkpoint_standard(self.checkpoint_distance, self.checkpoint_time, self.checkpoint_custom_fn, task)
+        return checkpoint_standard(
+            self.checkpoint_distance,
+            self.checkpoint_time,
+            self.checkpoint_custom_fn,
+            task,
+        )
 
     def resubmit(self, task):
         print(f"resubmitting task {task.description()} {task.datum}\n{task.std_output}")
@@ -1040,7 +1063,9 @@ class DynamicDataReduction:
                 self.add_accum_task(task)
         else:
             if not self.resubmit(task):
-                raise RuntimeError(f"task {task.datum} could not be completed\n{task.std_output}\n---\n{task.output}")
+                raise RuntimeError(
+                    f"task {task.datum} could not be completed\n{task.std_output}\n---\n{task.output}"
+                )
 
         task.cleanup()
 
@@ -1051,7 +1076,9 @@ class DynamicDataReduction:
     def compute(self):
         self.progress_bars = ProgressBar()
         for p in self.processors.values():
-            self.progress_bars.add_task(p, f"datasets", total=len(self.data["datasets"]))
+            self.progress_bars.add_task(
+                p, f"datasets", total=len(self.data["datasets"])
+            )
             self.progress_bars.add_task(p, f"procs", total=p.proc_tasks_total)
             self.progress_bars.add_task(p, f"accums", total=p.accum_tasks_total)
             self.progress_bars.add_task(p, f"items", total=p.items_total)
