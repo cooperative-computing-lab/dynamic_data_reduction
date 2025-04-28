@@ -14,13 +14,15 @@ from coffea.nanoevents import NanoAODSchema
 
 results_dir = "/cephfs/disc2/users/btovar/cortado"
 
+
 def skimmer(events):
-    """ Executes at the worker. The actual computation. It receives the event.events() from source_postprocess. """
+    """ Executes at the worker. The actual computation.
+        It receives the event.events() from source_postprocess. """
     import cortado.modules.skim_tools as skim_tools
     skimmed = skim_tools.make_skimmed_events(events)
     skimmed = skim_tools.uproot_writeable(skimmed)
-    # skimmed = skimmed.repartition(n_to_one=1_000)  # Comment for now, see https://github.com/dask-contrib/dask-awkward/issues/509
     return skimmed
+
 
 
 def result_postprocess(processor_name, dataset_name, results_dir, skim):
@@ -43,7 +45,8 @@ def result_postprocess(processor_name, dataset_name, results_dir, skim):
 
 
 def accumulator(a, b):
-    """ Executes at the worker. Merges two awkward arrays from independent skim results. """
+    """ Executes at the worker. Merges two awkward arrays
+    from independent skim results. """
     import awkward as ak
     return ak.concatenate(a, b, axis=1)
 
