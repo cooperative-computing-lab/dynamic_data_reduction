@@ -1,6 +1,6 @@
 #! /usr/bin/env python
 
-from dynmapred import DynMapReduce, DataT, ProcT, ResultT
+from ddr import DynamicDataReduction, DataT, ProcT, ResultT
 import ndcctools.taskvine as vine
 import awkward as ak
 import json
@@ -89,7 +89,7 @@ def make_source_preprocess(step_size, object_path):
                     "num_entries": end - start,
                     "metadata": file_info["metadata"],
                 }
-                yield (chunk_info, end - start)
+                yield (chunk_info, chunk_info["num_entries"])
                 start = end
 
         for file_info in dataset_info["files"]:
@@ -99,7 +99,7 @@ def make_source_preprocess(step_size, object_path):
 
 
 
-class CoffeaDynMapReduce(DynMapReduce):
+class CoffeaDynamicDataReduction(DynamicDataReduction):
     def __init__(
         self,
         manager: vine.Manager,

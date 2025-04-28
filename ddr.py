@@ -228,9 +228,9 @@ def identity_source_conector(datum, **extra_args):
     return datum
 
 
-def identity_source_preprocess(datum, **extra_args):
-    yield datum
-
+def identity_source_preprocess(dataset_info, **extra_args):
+    for datum in dataset_info:
+        yield (datum, 1)
 
 def default_accumualtor(a, b, **extra_args):
     return a + b
@@ -238,7 +238,7 @@ def default_accumualtor(a, b, **extra_args):
 
 @dataclasses.dataclass
 class ProcCounts:
-    workflow: object  # really a DynMapReduce, but typing in python is a pain
+    workflow: object  # really a DynamicDataReduction, but typing in python is a pain
     name: str
     fn: Callable[[ProcT], ResultT]
     priority: int = 0
@@ -435,11 +435,8 @@ class DatasetCounts:
             if self.processor.workflow.result_postprocess:
                 dir = self.processor.workflow.results_directory
                 r = self.processor.workflow.result_postprocess(self.processor.name, self.name, dir, r)
-            # self.result = r
+            self.result = r
             print(f"{self.processor.name}#{self.name} completed!")
-            # print(f"{self.items_done}/{self.processor.items_done}/{self.processor.items_submitted} items done")
-            # print(f"{self.proc_tasks_done}/{self.processor.proc_tasks_done}/{self.processor.proc_tasks_submitted} processing tasks done")
-            # print(f"{self.accum_tasks_done}/{self.processor.accum_tasks_done}/{self.processor.accum_tasks_submitted} accumulation tasks done")
 
             self.processor.workflow.progress_bars.advance(self.processor, "datasets", 1)
             for bar_type in ["procs", "accums", "items"]:
@@ -751,7 +748,7 @@ class DynMapRedAccumTask(DynMapRedTask):
 
 
 @dataclasses.dataclass
-class DynMapReduce:
+class DynamicDataReduction:
     manager: vine.Manager
     processors: Callable[[ProcT], ResultT] | List[Callable[[ProcT], ResultT]] | dict[str, Callable[[ProcT], ResultT]]
     data: dict[str, dict[str, Any]]
@@ -818,6 +815,9 @@ class DynMapReduce:
 
         if not self.resources_accumualting:
             self.resources_accumualting = {"cores": 1}
+
+        if not self.remote_executor_args:
+            self.remote_executor_args = {}
 
         Path(self.results_directory).mkdir(parents=True, exist_ok=True)
 
@@ -937,10 +937,10 @@ class DynMapReduce:
     def all_proc_done(self):
         return all(p.all_proc_done for p in reversed(self.processors.values()))
 
-    def should_checkpoint(self, t):
-        if t.checkpoint or t.final:
+    def should_checkpoint(self, task):
+        if task.checkpoint or task.final:
             return True
-        return checkpoint_standard(self.checkpoint_distance, self.checkpoint_standard, self.checkpoint_custom_fn)
+        return checkpoint_standard(self.checkpoint_distance, self.checkpoint_time, self.checkpoint_custom_fn, task)
 
     def resubmit(self, task):
         print(f"resubmitting task {task.description()} {task.datum}\n{task.std_output}")
@@ -1049,10 +1049,10 @@ class DynMapReduce:
     def compute(self):
         self.progress_bars = ProgressBar()
         for p in self.processors.values():
-            self.progress_bars.add_task(p, "datasets", total=len(self.data["datasets"]))
-            self.progress_bars.add_task(p, "procs", total=p.proc_tasks_total)
-            self.progress_bars.add_task(p, "accums", total=p.accum_tasks_total)
-            self.progress_bars.add_task(p, "items", total=p.items_total)
+            self.progress_bars.add_task(p, f"datasets", total=len(self.data["datasets"]))
+            self.progress_bars.add_task(p, f"procs", total=p.proc_tasks_total)
+            self.progress_bars.add_task(p, f"accums", total=p.accum_tasks_total)
+            self.progress_bars.add_task(p, f"items", total=p.items_total)
 
         result = self._compute_internal()
         self.refresh_progress_bars()
@@ -1078,10 +1078,6 @@ class DynMapReduce:
             task = self.wait(5)
             if task:
                 self.add_completed(task)
-            # else:
-            #     for p in self.processors.values():
-            #         for ds in p._datasets.values():
-            #             print(f"{p.name},{ds.name}: {ds.items_done}, {ds.items_submitted}, {len(ds.active)}, {len(ds.pending_accumulation)}")
 
             if self.all_proc_done and self.manager.empty():
                 break
@@ -1119,8 +1115,11 @@ class ProgressBar:
         if enabled:
             self._prog.start()
 
+    def bar_name(self, p, bar_type):
+        return f"{bar_type} ({p.name})"
+
     def add_task(self, p, bar_type, *args, **kwargs):
-        b = self._prog.add_task(bar_type, *args, **kwargs)
+        b = self._prog.add_task(self.bar_name(p, bar_type), *args, **kwargs)
         self._ids.setdefault(p, {})[bar_type] = b
         self._prog.start_task(self._ids[p][bar_type])
         return b
@@ -1141,71 +1140,3 @@ class ProgressBar:
     # redirect anything else to rich_bar
     def __getattr__(self, name):
         return getattr(self._prog, name)
-
-    # return rich.progress.Progress(
-    #     TextColumn("[bold blue]{task.description}", justify="right"),
-    #     "[progress.percentage]{task.percentage:>3.0f}%",
-
-    #     BarColumn(bar_width=None),
-    #     TextColumn(
-    #         "[bold blue][progress.completed]{task.completed}/{task.total}",
-    #         justify="right",
-    #     ),
-    #     "[",
-    #     TimeElapsedColumn(),
-    #     "<",
-    #     TimeRemainingColumn(),
-    #     "|",
-    #     SpeedColumn(".1f"),
-    #     TextColumn("[progress.data.speed]{task.fields[unit]}/s", justify="right"),
-    #     "]",
-    #     auto_refresh=False,
-    # )
-
-
-if __name__ == "__main__":
-    import itertools
-
-    n = 12
-    data = {
-        "datasets": {
-            "some_ds": {"pairs": list(itertools.pairwise(range(1, n + 1))), "size": n}
-        },
-        "size": n,
-    }
-
-    # data = [da.from_array(list(range(0, n * 1000000, n))[0:10]) for n in range(1, 10000)]
-
-    def preprocess(ds):
-        for pair in ds["pairs"]:
-            yield from (pair, 1)
-
-    def postprocess(n):
-        return da.from_array(list(range(0, n * 1000000, n))[0:10])
-
-    def double_data(datum):
-        return datum.proc_blocks(lambda x: x * 2)
-
-    def add_data(a, b):
-        return a + b
-
-    mgr = vine.Manager(port=[9123, 9129], name="btovar-dynmapred")
-    dmr = DynMapReduce(
-        mgr,
-        source_preprocess=preprocess,
-        source_postprocess=postprocess,
-        processors=double_data,
-        accumulator=add_data,
-        data=data,
-    )
-
-    workers = vine.Factory("local", manager=mgr)
-    workers.max_workers = 1
-    workers.min_workers = 0
-    workers.cores = 4
-    workers.memory = 2000
-    workers.disk = 8000
-    with workers:
-        result = dmr.compute(data)
-
-    print(result)
