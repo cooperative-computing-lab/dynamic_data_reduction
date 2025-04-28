@@ -840,6 +840,8 @@ class DynamicDataReduction:
                 self._extra_files_map[os.path.basename(path)] = (
                     self.manager.declare_file(path, cache=True)
                 )
+        
+        self._extra_files_map[os.path.basename("ddr.py")] = self.manager.declare_file("ddr.py", cache=True)
 
         self._wait_timeout = 5
         self._graph_file = None

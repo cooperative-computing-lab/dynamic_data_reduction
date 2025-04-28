@@ -59,7 +59,7 @@ def make_source_postprocess(schema, uproot_options):
         }
         events = NanoEventsFactory.from_root(
             d,
-            schema=schema,
+            schemaclass=schema,
             uproot_options=uproot_options,
             metadata=chunk_info["metadata"],
         )
@@ -112,8 +112,8 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         accumulation_size: int = 10,
         accumulator: Callable[[ResultT, ResultT], ResultT] = None,
         checkpoint_accumulations: bool = False,
-        checkpoint_max_distance: int = 3,
-        checkpoint_max_time: int = 1800,
+        checkpoint_distance: int = 3,
+        checkpoint_time: int = 1800,
         environment: Optional[str] = None,
         extra_files: Optional[list[str]] = None,
         file_replication: int = 3,
@@ -126,6 +126,8 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         results_directory: str = "results",
         result_postprocess: Optional[Callable[[str, str, str, ResultT], Any]] = None,
         graph_output_file: bool = True,
+        
+        remote_executor_args: Optional[Mapping[str, Any]] = None,
 
         x509_proxy: Optional[str] = None,
 
@@ -142,8 +144,8 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             accumulation_size=accumulation_size,
             accumulator=accumulator,
             checkpoint_accumulations=checkpoint_accumulations,
-            checkpoint_max_distance=checkpoint_max_distance,
-            checkpoint_max_time=checkpoint_max_time,
+            checkpoint_distance=checkpoint_distance,
+            checkpoint_time=checkpoint_time,
             environment=environment,
             extra_files=extra_files,
             file_replication=file_replication,
@@ -158,40 +160,41 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             graph_output_file=graph_output_file,
             x509_proxy=x509_proxy,
 
+            remote_executor_args=remote_executor_args,
+
             source_postprocess=make_source_postprocess(schema, uproot_options),
             source_preprocess=make_source_preprocess(step_size, object_path),
         )
 
 
-@classmethod
-def from_coffea_preprocess(cls, data):
-    """ Converts coffea style preprocessed data into DynMapReduce data. """
-    new_data = {}
+    def from_coffea_preprocess(self, data):
+        """ Converts coffea style preprocessed data into DynMapReduce data. """
+        new_data = {}
 
-    for (i, (ds_name, ds_specs)) in enumerate(reversed(data.items())):
-        new_specs = []
-        extra_data = dict(ds_specs)
-        del extra_data["files"]
+        for (i, (ds_name, ds_specs)) in enumerate(reversed(data.items())):
+            new_specs = []
+            extra_data = dict(ds_specs)
+            del extra_data["files"]
 
-        dataset_events = 0
-        total_events = 0
-        for (j, (filename, file_info)) in enumerate(ds_specs["files"].items()):
-            if file_info["num_entries"] < 1:
-                continue
+            dataset_events = 0
+            total_events = 0
+            for (j, (filename, file_info)) in enumerate(ds_specs["files"].items()):
+                if file_info["num_entries"] < 1:
+                    continue
 
-            dataset_events += file_info["num_entries"]
-            total_events += dataset_events
-            d = {"file": filename}
-            d.update(file_info)
-            d.update(extra_data)
+                dataset_events += file_info["num_entries"]
+                total_events += dataset_events
+                d = {"file": filename}
+                d.update(file_info)
+                d.update(extra_data)
 
-            if "metadata" not in d or d["metadata"] is None:
-                d["metadata"] = {}
-            d["metadata"]["dataset"] = ds_name
-            new_specs.append(d)
-        if len(new_specs) > 0:
-            new_data[ds_name] = {
-                "files": new_specs,
-                "size": dataset_events,
-            }
-    return {"datasets": new_data, "size": total_events}
+                if "metadata" not in d or d["metadata"] is None:
+                    d["metadata"] = {}
+                d["metadata"]["dataset"] = ds_name
+                new_specs.append(d)
+            if len(new_specs) > 0:
+                new_data[ds_name] = {
+                    "files": new_specs,
+                    "size": dataset_events,
+                }
+        return {"datasets": new_data, "size": total_events}
