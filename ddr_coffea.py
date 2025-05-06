@@ -140,7 +140,7 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         super().__init__(
             manager=manager,
             processors=processors,
-            data=self.from_coffea_preprocess(data),
+            data=self.from_coffea_preprocess(data, max_datasets, max_files_per_dataset),
             accumulation_size=accumulation_size,
             accumulator=accumulator,
             checkpoint_accumulations=checkpoint_accumulations,
