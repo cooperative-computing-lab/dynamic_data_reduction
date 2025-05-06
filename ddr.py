@@ -1,6 +1,5 @@
 #! /usr/bin/env python
 
-import dask.array as da
 import cloudpickle
 import lz4.frame
 import sys
@@ -1077,11 +1076,11 @@ class DynamicDataReduction:
         self.progress_bars = ProgressBar()
         for p in self.processors.values():
             self.progress_bars.add_task(
-                p, f"datasets", total=len(self.data["datasets"])
+                p, "datasets", total=len(self.data["datasets"])
             )
-            self.progress_bars.add_task(p, f"procs", total=p.proc_tasks_total)
-            self.progress_bars.add_task(p, f"accums", total=p.accum_tasks_total)
-            self.progress_bars.add_task(p, f"items", total=p.items_total)
+            self.progress_bars.add_task(p, "procs", total=p.proc_tasks_total)
+            self.progress_bars.add_task(p, "accums", total=p.accum_tasks_total)
+            self.progress_bars.add_task(p, "items", total=p.items_total)
 
         result = self._compute_internal()
         self.refresh_progress_bars()

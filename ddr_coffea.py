@@ -133,6 +133,8 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         step_size: int = 100_000,
         object_path: str = "Events",
         uproot_options: Optional[Mapping[str, Any]] = None,
+        max_datasets: Optional[int] = None,
+        max_files_per_dataset: Optional[int] = None,
     ):
 
         super().__init__(
@@ -162,20 +164,26 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             source_preprocess=make_source_preprocess(step_size, object_path),
         )
 
-    def from_coffea_preprocess(self, data):
+    def from_coffea_preprocess(self, data, max_datasets=None, max_files_per_dataset=None):
         """Converts coffea style preprocessed data into DynMapReduce data."""
         new_data = {}
 
-        for i, (ds_name, ds_specs) in enumerate(reversed(data.items())):
+        for ds_index, (ds_name, ds_specs) in enumerate(reversed(data.items())):
+            if max_datasets and ds_index >= max_datasets:
+                break
+
             new_specs = []
             extra_data = dict(ds_specs)
             del extra_data["files"]
 
             dataset_events = 0
             total_events = 0
-            for j, (filename, file_info) in enumerate(ds_specs["files"].items()):
+            for ds_files_index, (filename, file_info) in enumerate(ds_specs["files"].items()):
                 if file_info["num_entries"] < 1:
                     continue
+
+                if max_files_per_dataset and ds_files_index >= max_files_per_dataset:
+                    break
 
                 dataset_events += file_info["num_entries"]
                 total_events += dataset_events
