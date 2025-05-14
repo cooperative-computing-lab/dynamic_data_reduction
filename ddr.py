@@ -31,11 +31,14 @@ ResultT = TypeVar("ResultT")
 priority_separation = 1_000_000
 
 
-def checkpoint_standard(distance, time, custom_fn, task):
+def checkpoint_standard(distance, time, size, custom_fn, len_fn, task):
     if distance is not None and task.checkpoint_distance > distance:
         return True
 
     elif time is not None and task.cumulative_exec_time > time:
+        return True
+
+    elif size is not None and len_fn(task) > size:
         return True
 
     elif custom_fn is not None:
@@ -152,12 +155,14 @@ def accumulate(accumulator, result_names, accumulator_args=None, to_file=True):
 
         if out is None:
             out = other
-        else:
-            try:
-                out = accumulator(out, other, **accumulator_args)
-            except TypeError:
-                pass
-            del other
+            continue
+
+        try:
+            out = accumulator(out, other, **accumulator_args)
+        except TypeError:
+            print(f"TYPE_ERROR: {r}")
+            raise
+        del other
 
     if to_file:
         with lz4.frame.open("task_output.p", "wb") as fp:
@@ -405,6 +410,7 @@ class DatasetCounts:
         self.proc_tasks_submitted = 0
         self.accum_tasks_done = 0
         self.accum_tasks_submitted = 0
+        self.accum_tasks_checkpointed = 0
 
     @property
     def all_proc_done(self):
@@ -412,6 +418,9 @@ class DatasetCounts:
 
     def add_completed(self, task):
         self.active.remove(task.id)
+
+        if task.is_checkpoint():
+            self.accum_tasks_checkpointed += 1
 
         if isinstance(task, DynMapRedProcessingTask):
             self.proc_tasks_done += 1
@@ -431,22 +440,24 @@ class DatasetCounts:
         self.active.add(task.id)
 
     def set_result(self, task):
-        self.output_file = task.result_file
-        with lz4.frame.open(self.output_file.source(), "rb") as fp:
-            r = cloudpickle.load(fp)
+        print(f"{self.processor.name}#{self.name} completed!")
+        r = None
+        if task:
+            self.processor.workflow.apply_checkpoint_postprocess(task, force=True)
+            self.output_file = task.result_file
+            with lz4.frame.open(self.output_file.source(), "rb") as fp:
+                    r = cloudpickle.load(fp)
             if self.processor.workflow.result_postprocess:
                 dir = self.processor.workflow.results_directory
                 r = self.processor.workflow.result_postprocess(
                     self.processor.name, self.name, dir, r
                 )
-            self.result = r
-            print(f"{self.processor.name}#{self.name} completed!")
-
-            self.processor.workflow.progress_bars.advance(self.processor, "datasets", 1)
-            for bar_type in ["procs", "accums", "items"]:
-                self.processor.workflow.progress_bars.stop_task(
-                    self.processor, bar_type
-                )
+        self.result = r
+        self.processor.workflow.progress_bars.advance(self.processor, "datasets", 1)
+        for bar_type in ["procs", "accums", "items"]:
+            self.processor.workflow.progress_bars.stop_task(
+                self.processor, bar_type
+            )
 
     def ready_for_result(self):
         return (
@@ -536,7 +547,7 @@ class DynMapRedTask(abc.ABC):
         if not self._result_file:
             if self.is_checkpoint():
                 if self.is_final():
-                    name = f"{self.manager.results_directory}/{self.processor.name}/{self.dataset.name}"
+                    name = f"{self.manager.results_directory}/raw/{self.processor.name}/{self.dataset.name}"
                 else:
                     name = f"{self.manager.staging_directory}/{self.processor.name}/{uuid.uuid4()}"
                 self._result_file = self.manager.declare_file(
@@ -738,7 +749,7 @@ class DynMapRedAccumTask(DynMapRedTask):
             self.manager.accumulation_size = int(
                 math.ceil(self.manager.accumulation_size / 2)
             )  # this should not be here
-            print("reducing accumulation size to {self.accumulation_size}")
+            print(f"reducing accumulation size to {self.manager.accumulation_size}")
 
         ts = [
             {"input_tasks": self.input_tasks[0:n]},
@@ -762,10 +773,12 @@ class DynamicDataReduction:
         | dict[str, Callable[[ProcT], ResultT]]
     )
     data: dict[str, dict[str, Any]]
+    result_length: Callable[[ResultT], int] = len
     accumulation_size: int = 10
     accumulator: Optional[Callable[[ResultT, ResultT], ResultT]] = default_accumualtor
     accumulator_args: Optional[Mapping[str, Any]] = None
     checkpoint_accumulations: bool = False
+    checkpoint_size: Optional[int] = None
     checkpoint_distance: Optional[int] = None
     checkpoint_time: Optional[int] = None
     checkpoint_custom_fn: Optional[Callable[[DynMapRedTask], bool]] = None
@@ -781,6 +794,7 @@ class DynamicDataReduction:
     resources_processing: Optional[Mapping[str, float]] = None
     results_directory: str = "results"
     result_postprocess: Optional[Callable[[str, str, str, ResultT], Any]] = None
+    checkpoint_postprocess: Optional[Callable[[str, str, str, bool, int, ResultT], Any]] = None
     source_postprocess: Callable[[DataT], ProcT] = identity_source_conector
     source_postprocess_args: Optional[Mapping[str, Any]] = None
     source_preprocess: Callable[[Any], DataT] = identity_source_preprocess
@@ -918,9 +932,33 @@ class DynamicDataReduction:
         )
         self.submit(t)
 
+    def apply_checkpoint_postprocess(self, task, force=False):
+        ds = task.dataset
+        keep_accumulating = True
+        if self.checkpoint_postprocess and task.is_checkpoint():
+            with lz4.frame.open(task.result_file.source(), "rb") as fp:
+                r = cloudpickle.load(fp)
+            keep_accumulating = self.checkpoint_postprocess(
+                task.processor.name,
+                ds.name,
+                self.results_directory,
+                force,
+                ds.accum_tasks_checkpointed,
+                r,
+            )
+            if not keep_accumulating:
+                print(f"CHECKPOINT_POSTPROCESS: {len(r)}")
+
+        if not keep_accumulating:
+            task.cleanup()
+
+        return keep_accumulating
+
     def add_accum_task(self, task):
         ds = task.dataset
-        ds.pending_accumulation.append(task)
+        keep_accumulating = self.apply_checkpoint_postprocess(task)
+        if keep_accumulating:
+            ds.pending_accumulation.append(task)
 
         final = False
         accum_size = max(2, self.accumulation_size)
@@ -928,6 +966,10 @@ class DynamicDataReduction:
             if len(ds.pending_accumulation) <= accum_size:
                 final = True
         elif len(ds.pending_accumulation) < 2 * accum_size:
+            return
+
+        if final and len(ds.pending_accumulation) == 0:
+            ds.set_result(None)
             return
 
         ds.pending_accumulation.sort(
@@ -962,7 +1004,9 @@ class DynamicDataReduction:
         return checkpoint_standard(
             self.checkpoint_distance,
             self.checkpoint_time,
+            self.checkpoint_size,
             self.checkpoint_custom_fn,
+            self.result_length,
             task,
         )
 
@@ -1036,7 +1080,6 @@ class DynamicDataReduction:
         )
         hungry = self.manager.hungry()
 
-        # print(f"queue is hungry for {hungry} task(s)")
         return max(0, min(max_active, max_batch, hungry))
 
     def add_completed(self, task):

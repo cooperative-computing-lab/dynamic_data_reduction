@@ -26,26 +26,138 @@ def skimmer(events):
 
 def result_postprocess(processor_name, dataset_name, results_dir, skim):
     """Executes at the manager. Saves python object into parquet file."""
+    import awkward as ak
     if skim is not None:
-        dir = f"{results_dir}/{processor_name}/"
+        dir = f"{results_dir}/{processor_name}/{dataset_name}"
         pathlib.Path(dir).mkdir(parents=True, exist_ok=True)
+        ak.to_parquet(skim, f"{dir}/output.parquet")
 
-        ak.to_parquet(skim, f"{dir}/{dataset_name}.parquet")
-
-        # uproot.write(
-        #     f"{dir}/{dataset_name}.root",
-        #     skim,
-        #     mode="update",
-        #     compression=uproot.ZSTD(1),
-        # )
+    return None
 
 
-def accumulator(a, b):
-    """Executes at the worker. Merges two awkward arrays
-    from independent skim results."""
+def checkpoint_postprocess_bad(processor_name, dataset_name, results_dir, force, index, skim):
+    """Executes at the manager. Saves python object into root file."""
+    import uproot
     import awkward as ak
 
-    return ak.concatenate(a, b, axis=1)
+    def is_root_compat(a):
+        if isinstance(a, ak.types.NumpyType):
+            return True
+        elif isinstance(a, ak.types.ListType) and isinstance(a.content, ak.types.NumpyType):
+            return True
+        else:
+            return False
+
+    def uproot_writeable(skim):
+        out = skim[list(x for x in skim.fields if not skim[x].fields)]
+        for bname in skim.fields:
+            if skim[bname].fields:
+                d = {str(n): ak.without_parameters(skim[bname][n]) for n in skim[bname].fields if is_root_compat(skim[bname][n])}
+                if len(d) > 0:
+                    out[bname] = ak.zip(d)
+        return out
+
+    if skim is not None:
+        dir = f"{results_dir}/{processor_name}/{dataset_name}"
+        file_name = f"{dir}/output_{index:05d}.root"
+        print(f"Writing{file_name}!")
+
+        pathlib.Path(dir).mkdir(parents=True, exist_ok=True)
+
+        with uproot.recreate(file_name) as f:
+            f["Events"] = uproot_writeable(skim)
+
+        print(f"Wrote {file_name}!")
+
+        # uproot.dask_write(
+        #     dak.from_awkward(skim, npartitions=1),
+        #     destination=dir,
+        #     prefix=dataset_name,
+        #     compute=True,
+        #     tree_name="Events",
+        # ).compute()
+
+    # since we saved the file, we don't need to accumualte this result upstream anymore
+    return None
+
+
+def ak_to_root(
+    destination,
+    array,
+    tree_name="Events",
+    compression="zlib",
+    compression_level=1,
+    title="",
+    counter_name=lambda counted: "n" + counted,
+    field_name=lambda outer, inner: inner if outer == "" else outer + "_" + inner,
+    initial_basket_capacity=10,
+    resize_factor=10.0,
+    storage_options=None,
+):
+    import uproot
+
+    if compression in ("LZMA", "lzma"):
+        compression_code = uproot.const.kLZMA
+    elif compression in ("ZLIB", "zlib"):
+        compression_code = uproot.const.kZLIB
+    elif compression in ("LZ4", "lz4"):
+        compression_code = uproot.const.kLZ4
+    elif compression in ("ZSTD", "zstd"):
+        compression_code = uproot.const.kZSTD
+    else:
+        msg = f"unrecognized compression algorithm: {compression}. Only ZLIB, LZMA, LZ4, and ZSTD are accepted."
+        raise ValueError(msg)
+
+    with uproot.recreate(
+        destination,
+        compression=uproot.compression.Compression.from_code_pair(
+            compression_code, compression_level
+        ),
+        **(storage_options or {}),
+    ) as out_file:
+
+        branch_types = {name: array[name].type for name in array.fields}
+
+        out_file.mktree(
+            tree_name,
+            branch_types,
+            title=title,
+            counter_name=counter_name,
+            field_name=field_name,
+            initial_basket_capacity=initial_basket_capacity,
+            resize_factor=resize_factor,
+        )
+
+        out_file[tree_name].extend({name: array[name] for name in array.fields})
+    return None
+
+
+def checkpoint_postprocess(processor_name, dataset_name, results_dir, force, index, skim):
+    """Executes at the manager. Saves python object into root file."""
+    if skim is not None:
+        if force or len(skim) >= 250_000:
+            print(f"Applying checkpoint postprocess for {processor_name}_{dataset_name}_{index} {len(skim)}")
+            dir = f"{results_dir}/{processor_name}/{dataset_name}"
+            filename = f"output-{index:05d}.root"
+            pathlib.Path(dir).mkdir(parents=True, exist_ok=True)
+            ak_to_root(f"{dir}/{filename}", skim)
+            # since we saved the file, we don't need to accumualte this result upstream anymore
+            return False
+    return True
+
+
+def accumulator(a, b, **kwargs):
+    """Executes at the worker. Merges two awkward arrays
+    from independent skim results."""
+    r = None
+    if a is None:
+        r = b
+    elif b is None:
+        r = a
+    else:
+        import awkward as ak
+        r = ak.concatenate([a, b])
+    return r
 
 
 if __name__ == "__main__":
@@ -92,6 +204,12 @@ if __name__ == "__main__":
         "--max-tasks-active", type=int, default=4000, help="Maximum active tasks"
     )
     parser.add_argument(
+        "--max-datasets", type=int, default=None, help="Maximum number of datasets to process"
+    )
+    parser.add_argument(
+        "--max-files-per-dataset", type=int, default=None, help="Maximum number of files per dataset to process"
+    )
+    parser.add_argument(
         "--port-range",
         type=str,
         default="9128:9129",
@@ -133,10 +251,11 @@ if __name__ == "__main__":
     port_range = [int(p) for p in args.port_range.split(":")]
     mgr = vine.Manager(
         port=port_range,
-        name=f"{getpass.getuser()}-cortado-dynmapred",
+        name=f"{getpass.getuser()}x-cortado-dynmapred",
         run_info_path=args.run_info_path,
     )
     mgr.tune("hungry-minimum", 1)
+    #mgr.tune("wait-for-workers", 50)
     mgr.enable_monitoring(watchdog=False)
 
     # Check if the X509 proxy file exists
@@ -157,7 +276,8 @@ if __name__ == "__main__":
         schema=NanoAODSchema,
         uproot_options={"timeout": 300},
         remote_executor_args={"scheduler": "threads"},
-        result_postprocess=result_postprocess,
+        #result_postprocess=result_postprocess,
+        checkpoint_postprocess=checkpoint_postprocess,
         accumulator=accumulator,
         checkpoint_accumulations=args.checkpoint_accumulations,
         checkpoint_distance=args.checkpoint_distance,
@@ -167,13 +287,13 @@ if __name__ == "__main__":
         file_replication=args.file_replication,
         max_tasks_active=args.max_tasks_active,
         max_task_retries=args.max_task_retries,
+        max_datasets=args.max_datasets,
+        max_files_per_dataset=args.max_files_per_dataset,
         extra_files=[],
         resources_processing={"cores": args.cores},
         resources_accumualting={"cores": args.cores},
-        results_directory=f"{args.results_dir}/raw/",
+        results_directory=f"{args.results_dir}",
     )
 
     result = ddr.compute()
-    with open("result_ac.pkl", "wb") as fw:
-        cloudpickle.dump(result, fw)
     pprint.pprint(result)
