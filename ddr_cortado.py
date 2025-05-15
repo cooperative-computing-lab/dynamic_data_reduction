@@ -129,21 +129,26 @@ def ak_to_root(
         )
 
         out_file[tree_name].extend({name: array[name] for name in array.fields})
+
     return None
 
 
-def checkpoint_postprocess(processor_name, dataset_name, results_dir, force, index, skim):
+def checkpoint_postprocess(skim, results_dir, processor_name, dataset_name, size, force):
     """Executes at the manager. Saves python object into root file."""
-    if skim is not None:
-        if force or len(skim) >= 250_000:
-            print(f"Applying checkpoint postprocess for {processor_name}_{dataset_name}_{index} {len(skim)}")
-            dir = f"{results_dir}/{processor_name}/{dataset_name}"
-            filename = f"output-{index:05d}.root"
-            pathlib.Path(dir).mkdir(parents=True, exist_ok=True)
-            ak_to_root(f"{dir}/{filename}", skim)
-            # since we saved the file, we don't need to accumualte this result upstream anymore
-            return False
-    return True
+    import uuid
+    import awkward as ak
+
+    if not force and size < 20_000:
+        return True
+
+    print(f"Applying checkpoint postprocess for {processor_name}_{dataset_name} {size}")
+    dir = f"{results_dir}/{processor_name}/{dataset_name}"
+    filename = f"output-{uuid.uuid4()}.root"
+    pathlib.Path(dir).mkdir(parents=True, exist_ok=True)
+    ak_to_root(f"{dir}/{filename}", skim)
+
+    # since we saved the file, we don't need to accumualte this result upstream anymore
+    return False
 
 
 def accumulator(a, b, **kwargs):
@@ -291,7 +296,7 @@ if __name__ == "__main__":
         max_files_per_dataset=args.max_files_per_dataset,
         extra_files=[],
         resources_processing={"cores": args.cores},
-        resources_accumualting={"cores": args.cores},
+        resources_accumualting={"cores": args.cores + 1},
         results_directory=f"{args.results_dir}",
     )
 

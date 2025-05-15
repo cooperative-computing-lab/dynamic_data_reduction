@@ -139,12 +139,14 @@ def wrap_processing(
     with lz4.frame.open("task_output.p", "wb") as fp:
         cloudpickle.dump(result, fp)
 
+    try:
+        return len(result)
+    except:
+        return 1
 
-def accumulate(accumulator, result_names, accumulator_args=None, to_file=True):
+
+def accumulate(accumulator, result_names, *, write_fn, results_dir, processor_name, dataset_name, force):
     out = None
-
-    if accumulator_args is None:
-        accumulator_args = {}
 
     for r in sorted(result_names):
         with lz4.frame.open(r, "rb") as fp:
@@ -158,27 +160,35 @@ def accumulate(accumulator, result_names, accumulator_args=None, to_file=True):
             continue
 
         try:
-            out = accumulator(out, other, **accumulator_args)
+            out = accumulator(out, other)
         except TypeError:
             print(f"TYPE_ERROR: {r}")
             raise
         del other
 
-    if to_file:
-        with lz4.frame.open("task_output.p", "wb") as fp:
-            cloudpickle.dump(out, fp)
-    else:
-        return out
+    try:
+        size = len(out)
+    except:
+        size = len(result_names)
+
+    keep_accumulating = True
+    if write_fn:
+        keep_accumulating = write_fn(out, results_dir, processor_name, dataset_name, size, force)
+
+    with lz4.frame.open("task_output.p", "wb") as fp:
+        if not keep_accumulating:
+            out = None
+            size = 0
+        cloudpickle.dump(out, fp)
+        return size
 
 
 def accumulate_tree(
     accumulator,
     results,
     accumulator_n_args=2,
-    to_file=True,
     from_files=True,
     local_executor_args=None,
-    accumulator_args=None,
 ):
     import dask
     import os
@@ -190,9 +200,6 @@ def accumulate_tree(
     local_executor_args.setdefault("scheduler", "threads")
     local_executor_args.setdefault("num_workers", os.environ.get("CORES", 1))
 
-    if accumulator_args is None:
-        accumulator_args = {}
-
     if from_files:
 
         def load(filename):
@@ -203,8 +210,6 @@ def accumulate_tree(
 
         def load(result):
             return result
-
-    accumulator_w_kwargs = partial(accumulator, **accumulator_args)
 
     to_reduce = []
     task_graph = {}
@@ -223,11 +228,13 @@ def accumulate_tree(
         to_reduce.append(key)
 
     out = dask.get(task_graph, to_reduce[0], **local_executor_args)
-    if to_file:
-        with lz4.frame.open("task_output.p", "wb") as fp:
-            cloudpickle.dump(out, fp)
-    else:
-        return out
+    with lz4.frame.open("task_output.p", "wb") as fp:
+        cloudpickle.dump(out, fp)
+
+    try:
+        return len(out)
+    except:
+        return len(results)
 
 
 def identity_source_conector(datum, **extra_args):
@@ -429,7 +436,7 @@ class DatasetCounts:
 
         if task.successful():
             if isinstance(task, DynMapRedProcessingTask):
-                self.items_done += task.size
+                self.items_done += task.input_size
 
     def add_active(self, task):
         if isinstance(task, DynMapRedProcessingTask):
@@ -440,10 +447,9 @@ class DatasetCounts:
         self.active.add(task.id)
 
     def set_result(self, task):
-        print(f"{self.processor.name}#{self.name} completed!")
+        print(f"{self.processor.name}#{self.name} completed! (size {task.output_size})")
         r = None
         if task:
-            self.processor.workflow.apply_checkpoint_postprocess(task, force=True)
             self.output_file = task.result_file
             with lz4.frame.open(self.output_file.source(), "rb") as fp:
                     r = cloudpickle.load(fp)
@@ -475,7 +481,6 @@ class DynMapRedTask(abc.ABC):
     dataset: DatasetCounts
     datum: Hashable
     _: dataclasses.KW_ONLY
-    size: int = 0
     input_tasks: list | None = (
         None  # want list[DynMapRedTask] and list[Self] does not inheret well
     )
@@ -483,6 +488,8 @@ class DynMapRedTask(abc.ABC):
     final: bool = False
     attempt_number: int = 1
     priority_constant: int = 0
+    input_size: int = 1
+    output_size: Optional[int] = None
 
     def __post_init__(self) -> None:
         self._result_file = None
@@ -600,7 +607,7 @@ class DynMapRedTask(abc.ABC):
 
     def cleanup(self):
         # intermediate results can only be cleaned-up from a task with results at the manager
-        if not self.is_checkpoint():
+        if not self.is_checkpoint() and self.output_size > 0:
             return
         self._cleanup_actual()
 
@@ -616,7 +623,6 @@ class DynMapRedTask(abc.ABC):
             self.processor,
             self.dataset,
             datum if datum is not None else self.datum,
-            size=self.size if input_tasks is None else len(input_tasks),
             input_tasks=input_tasks if input_tasks is not None else self.input_tasks,
             checkpoint=self.checkpoint,
             final=self.final,
@@ -713,6 +719,7 @@ class DynMapRedFetchTask(DynMapRedTask):
 class DynMapRedAccumTask(DynMapRedTask):
     def __post_init__(self):
         self.priority_constant = 2
+        self.input_size = sum(t.output_size for t in self.input_tasks)
         super().__post_init__()
 
     def create_task(
@@ -726,8 +733,11 @@ class DynMapRedAccumTask(DynMapRedTask):
             accumulate,
             self.manager.accumulator,
             [f"input_{t.id}" for t in input_tasks],
-            accumulator_args=self.manager.accumulator_args,
-            to_file=True,
+            write_fn=self.manager.checkpoint_postprocess,
+            results_dir=self.manager.results_directory,
+            processor_name=self.processor.name,
+            dataset_name=self.dataset.name,
+            force=self.final,
         )
 
         for t in input_tasks:
@@ -776,7 +786,6 @@ class DynamicDataReduction:
     result_length: Callable[[ResultT], int] = len
     accumulation_size: int = 10
     accumulator: Optional[Callable[[ResultT, ResultT], ResultT]] = default_accumualtor
-    accumulator_args: Optional[Mapping[str, Any]] = None
     checkpoint_accumulations: bool = False
     checkpoint_size: Optional[int] = None
     checkpoint_distance: Optional[int] = None
@@ -794,7 +803,7 @@ class DynamicDataReduction:
     resources_processing: Optional[Mapping[str, float]] = None
     results_directory: str = "results"
     result_postprocess: Optional[Callable[[str, str, str, ResultT], Any]] = None
-    checkpoint_postprocess: Optional[Callable[[str, str, str, bool, int, ResultT], Any]] = None
+    checkpoint_postprocess: Optional[Callable[[ResultT, str, str, str, bool], int]] = None
     source_postprocess: Callable[[DataT], ProcT] = identity_source_conector
     source_postprocess_args: Optional[Mapping[str, Any]] = None
     source_preprocess: Callable[[Any], DataT] = identity_source_preprocess
@@ -848,7 +857,8 @@ class DynamicDataReduction:
         if not self.remote_executor_args:
             self.remote_executor_args = {}
 
-        Path(self.results_directory).mkdir(parents=True, exist_ok=True)
+        results_dir = Path(self.results_directory).absolute()
+        results_dir.mkdir(parents=True, exist_ok=True)
 
         self.manager.tune("hungry-minimum", 100)
         self.manager.tune("prefer-dispatch", 1)
@@ -926,38 +936,14 @@ class DynamicDataReduction:
             target.processor,
             target.dataset,
             None,
-            size=1,
             input_tasks=[target],
             final=final,
         )
         self.submit(t)
 
-    def apply_checkpoint_postprocess(self, task, force=False):
-        ds = task.dataset
-        keep_accumulating = True
-        if self.checkpoint_postprocess and task.is_checkpoint():
-            with lz4.frame.open(task.result_file.source(), "rb") as fp:
-                r = cloudpickle.load(fp)
-            keep_accumulating = self.checkpoint_postprocess(
-                task.processor.name,
-                ds.name,
-                self.results_directory,
-                force,
-                ds.accum_tasks_checkpointed,
-                r,
-            )
-            if not keep_accumulating:
-                print(f"CHECKPOINT_POSTPROCESS: {len(r)}")
-
-        if not keep_accumulating:
-            task.cleanup()
-
-        return keep_accumulating
-
     def add_accum_task(self, task):
         ds = task.dataset
-        keep_accumulating = self.apply_checkpoint_postprocess(task)
-        if keep_accumulating:
+        if task.output_size > 0:
             ds.pending_accumulation.append(task)
 
         final = False
@@ -973,7 +959,7 @@ class DynamicDataReduction:
             return
 
         ds.pending_accumulation.sort(
-            key=lambda t: len(t.input_tasks) if t.input_tasks else 0
+            key=lambda t: t.output_size if t.output_size else len(t.input_tasks)
         )
 
         heads, ds.pending_accumulation = (
@@ -987,7 +973,6 @@ class DynamicDataReduction:
             first.processor,
             first.dataset,
             None,
-            size=1,
             input_tasks=heads,
             checkpoint=self.checkpoint_accumulations,
             final=final,
@@ -1069,9 +1054,9 @@ class DynamicDataReduction:
             for ds_name, ds_specs in datasets.items():
                 ds = p.dataset(ds_name)
                 gen = self.source_preprocess(ds_specs, **args)
-                for datum, size in gen:
-                    ds.items_submitted += size
-                    yield (p, ds, datum, size)
+                for datum, pre_size in gen:
+                    ds.items_submitted += pre_size
+                    yield (p, ds, datum, pre_size)
 
     def need_to_submit(self):
         max_active = self.max_tasks_active if self.max_tasks_active else sys.maxsize
@@ -1088,9 +1073,10 @@ class DynamicDataReduction:
 
         p.add_completed(task)
         if task.successful():
+            task.output_size = task.output
             if task.is_checkpoint():
                 print(
-                    f"checkpoint {task.description()}, cumulative(s): {task.cumulative_inputs_time + task.exec_time:.2f}"
+                    f"chkpt {task.description()} {task.cumulative_inputs_time + task.exec_time:.2f}(s), size: {task.output_size}/{task.input_size})"
                 )
 
             self.write_graph_file(task)
@@ -1139,7 +1125,7 @@ class DynamicDataReduction:
             if to_submit > 0:
                 for proc_name, ds_name, datum, size in item_generator:
                     task = DynMapRedProcessingTask(
-                        self, proc_name, ds_name, datum, size=size, input_tasks=None
+                        self, proc_name, ds_name, datum, input_tasks=None, input_size=size
                     )
                     self.submit(task)
                     to_submit -= 1
