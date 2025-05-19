@@ -1089,13 +1089,13 @@ class DynamicDataReduction:
                 self.add_fetch_task(task, final=False)
             else:
                 self.add_accum_task(task)
+            task.cleanup()
         else:
             if not self.resubmit(task):
                 raise RuntimeError(
                     f"task {task.datum} could not be completed\n{task.std_output}\n---\n{task.output}"
                 )
 
-        task.cleanup()
 
     def refresh_progress_bars(self):
         for p in self.processors.values():
