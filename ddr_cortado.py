@@ -138,7 +138,7 @@ def checkpoint_postprocess(skim, results_dir, processor_name, dataset_name, size
     import uuid
     import awkward as ak
 
-    if not force and size < 20_000:
+    if not force and size < 1_000:
         return True
 
     print(f"Applying checkpoint postprocess for {processor_name}_{dataset_name} {size}")
@@ -203,7 +203,7 @@ if __name__ == "__main__":
         help="Vine manager name",
     )
     parser.add_argument(
-        "--max-task-retries", type=int, default=50, help="Maximum task retries"
+        "--max-task-retries", type=int, default=10, help="Maximum task retries"
     )
     parser.add_argument(
         "--max-tasks-active", type=int, default=4000, help="Maximum active tasks"

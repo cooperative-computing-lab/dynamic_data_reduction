@@ -115,7 +115,9 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         checkpoint_accumulations: bool = False,
         checkpoint_distance: int = 3,
         checkpoint_time: int = 1800,
-        checkpoint_postprocess: Optional[Callable[[str, str, str, bool, int, ResultT], Any]] = None,
+        checkpoint_postprocess: Optional[
+            Callable[[str, str, str, bool, int, ResultT], Any]
+        ] = None,
         environment: Optional[str] = None,
         extra_files: Optional[list[str]] = None,
         file_replication: int = 3,
@@ -166,11 +168,14 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             source_preprocess=make_source_preprocess(step_size, object_path),
         )
 
-    def from_coffea_preprocess(self, data, max_datasets=None, max_files_per_dataset=None):
+    def from_coffea_preprocess(
+        self, data, max_datasets=None, max_files_per_dataset=None
+    ):
         """Converts coffea style preprocessed data into DynMapReduce data."""
         new_data = {}
 
         one = "WWZto4L2Nu_4F_TuneCP5_13p6TeV_amcatnlo-pythia8__Run3Summer22NanoAODv12-130X_mcRun3_2022_realistic_v5-v2__NANOAODSIM"
+        # for ds_index, (ds_name, ds_specs) in enumerate(data.items()):
         for ds_index, (ds_name, ds_specs) in enumerate(reversed(data.items())):
             if max_datasets and ds_index >= max_datasets:
                 break
@@ -184,7 +189,9 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
 
             dataset_events = 0
             total_events = 0
-            for ds_files_index, (filename, file_info) in enumerate(ds_specs["files"].items()):
+            for ds_files_index, (filename, file_info) in enumerate(
+                ds_specs["files"].items()
+            ):
                 if file_info["num_entries"] < 1:
                     continue
 

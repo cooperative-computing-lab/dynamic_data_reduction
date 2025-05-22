@@ -145,7 +145,16 @@ def wrap_processing(
         return 1
 
 
-def accumulate(accumulator, result_names, *, write_fn, results_dir, processor_name, dataset_name, force):
+def accumulate(
+    accumulator,
+    result_names,
+    *,
+    write_fn,
+    results_dir,
+    processor_name,
+    dataset_name,
+    force,
+):
     out = None
 
     for r in sorted(result_names):
@@ -173,7 +182,9 @@ def accumulate(accumulator, result_names, *, write_fn, results_dir, processor_na
 
     keep_accumulating = True
     if write_fn:
-        keep_accumulating = write_fn(out, results_dir, processor_name, dataset_name, size, force)
+        keep_accumulating = write_fn(
+            out, results_dir, processor_name, dataset_name, size, force
+        )
 
     with lz4.frame.open("task_output.p", "wb") as fp:
         if not keep_accumulating:
@@ -447,12 +458,12 @@ class DatasetCounts:
         self.active.add(task.id)
 
     def set_result(self, task):
-        print(f"{self.processor.name}#{self.name} completed! (size {task.output_size})")
+        print(f"{self.processor.name}#{self.name} completed!")
         r = None
         if task:
             self.output_file = task.result_file
             with lz4.frame.open(self.output_file.source(), "rb") as fp:
-                    r = cloudpickle.load(fp)
+                r = cloudpickle.load(fp)
             if self.processor.workflow.result_postprocess:
                 dir = self.processor.workflow.results_directory
                 r = self.processor.workflow.result_postprocess(
@@ -461,9 +472,7 @@ class DatasetCounts:
         self.result = r
         self.processor.workflow.progress_bars.advance(self.processor, "datasets", 1)
         for bar_type in ["procs", "accums", "items"]:
-            self.processor.workflow.progress_bars.stop_task(
-                self.processor, bar_type
-            )
+            self.processor.workflow.progress_bars.stop_task(self.processor, bar_type)
 
     def ready_for_result(self):
         return (
@@ -803,7 +812,9 @@ class DynamicDataReduction:
     resources_processing: Optional[Mapping[str, float]] = None
     results_directory: str = "results"
     result_postprocess: Optional[Callable[[str, str, str, ResultT], Any]] = None
-    checkpoint_postprocess: Optional[Callable[[ResultT, str, str, str, bool], int]] = None
+    checkpoint_postprocess: Optional[Callable[[ResultT, str, str, str, bool], int]] = (
+        None
+    )
     source_postprocess: Callable[[DataT], ProcT] = identity_source_conector
     source_postprocess_args: Optional[Mapping[str, Any]] = None
     source_preprocess: Callable[[Any], DataT] = identity_source_preprocess
@@ -820,6 +831,7 @@ class DynamicDataReduction:
             return re.sub(r"\W", "_", n)
 
         self._id_to_task = {}
+        self.datasets_failed = set()
 
         if isinstance(self.processors, list):
             nps = (len(self.processors) + 1) * priority_separation
@@ -941,9 +953,9 @@ class DynamicDataReduction:
         )
         self.submit(t)
 
-    def add_accum_task(self, task):
-        ds = task.dataset
-        if task.output_size > 0:
+    def add_accum_task(self, dataset, task):
+        ds = dataset
+        if task and task.output_size > 0:
             ds.pending_accumulation.append(task)
 
         final = False
@@ -1088,14 +1100,22 @@ class DynamicDataReduction:
             elif not task.is_checkpoint() and self.should_checkpoint(task):
                 self.add_fetch_task(task, final=False)
             else:
-                self.add_accum_task(task)
+                self.add_accum_task(task.dataset, task)
             task.cleanup()
         else:
-            if not self.resubmit(task):
-                raise RuntimeError(
-                    f"task {task.datum} could not be completed\n{task.std_output}\n---\n{task.output}"
-                )
-
+            try:
+                resubmitted = False
+                resubmitted = self.resubmit(task)
+            except Exception as e:
+                print(e)
+            finally:
+                if not resubmitted:
+                    self.datasets_failed.add(task.dataset.name)
+                    self.add_accum_task(task.dataset, None)
+                    print(
+                        f"task {task.datum} could not be completed\n{task.std_output}\n---\n{task.output}"
+                    )
+                    task.cleanup()
 
     def refresh_progress_bars(self):
         for p in self.processors.values():
@@ -1104,15 +1124,24 @@ class DynamicDataReduction:
     def compute(self):
         self.progress_bars = ProgressBar()
         for p in self.processors.values():
-            self.progress_bars.add_task(
-                p, "datasets", total=len(self.data["datasets"])
-            )
+            self.progress_bars.add_task(p, "datasets", total=len(self.data["datasets"]))
             self.progress_bars.add_task(p, "procs", total=p.proc_tasks_total)
             self.progress_bars.add_task(p, "accums", total=p.accum_tasks_total)
             self.progress_bars.add_task(p, "items", total=p.items_total)
 
         result = self._compute_internal()
         self.refresh_progress_bars()
+
+        if self.datasets_failed:
+            print("WARNING: The following datasets were not completely processed:")
+            print(
+                "--------------------------------------------------------------------------------"
+            )
+            for name in self.datasets_failed:
+                print(name)
+            print(
+                "--------------------------------------------------------------------------------"
+            )
 
         return result
 
@@ -1125,7 +1154,12 @@ class DynamicDataReduction:
             if to_submit > 0:
                 for proc_name, ds_name, datum, size in item_generator:
                     task = DynMapRedProcessingTask(
-                        self, proc_name, ds_name, datum, input_tasks=None, input_size=size
+                        self,
+                        proc_name,
+                        ds_name,
+                        datum,
+                        input_tasks=None,
+                        input_size=size,
                     )
                     self.submit(task)
                     to_submit -= 1
