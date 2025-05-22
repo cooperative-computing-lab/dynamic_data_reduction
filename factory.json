@@ -1,0 +1,18 @@
+{
+    "xmanager-name": "btovar-workqueue-coffea",
+    "xmanager-name": "btovar-hgg",
+    "xmanager-name": "btovar-taskvine-coffea",
+    "xmanager-name": "coffea-vine-btovar",
+    "xmanager-name": "(btovar-cortado-dynmapred|coffea-vine-btovar)",
+    "manager-name": ".*btovarx.*",
+    "max-workers": 206, "min-workers": 0,
+    "workers-per-cycle": 500,
+    "cores": 8,
+    "memory": cores * 4000,
+    "disk": cores * 16000,
+    "timeout": 300,
+    "xcondor-requirements": "((has_vast))",
+    "condor-requirements": "((has_vast) && (eth_link_speed == \"10000Mb/s\"))",
+    "xcondor-requirements": "((!regexp(\"qa-xp\", machine)) && (has_vast) && (eth_link_speed == \"10000Mb/s\"))"
+}
+
