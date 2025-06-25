@@ -1,0 +1,9 @@
+include README.md
+include LICENSE
+include environment.yml
+include *.json
+include *.yaml
+include *.yml
+recursive-include src *.py
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co] 
