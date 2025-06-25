@@ -3,7 +3,7 @@ requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "ddr"
+name = "dynamic_data_reduction"
 dynamic = ["version"]
 description = "Dynamic MapReduce framework for data processing"
 readme = "README.md"
@@ -44,16 +44,16 @@ dev = [
 ]
 
 [project.scripts]
-ddr = "ddr.ddr:main"
+dynamic_data_reduction = "dynamic_data_reduction.ddr:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/ddr"
-Repository = "https://github.com/yourusername/ddr.git"
-Documentation = "https://github.com/yourusername/ddr#readme"
-"Bug Tracker" = "https://github.com/yourusername/ddr/issues"
+Homepage = "https://github.com/yourusername/dynamic_data_reduction"
+Repository = "https://github.com/yourusername/dynamic_data_reduction.git"
+Documentation = "https://github.com/yourusername/dynamic_data_reduction#readme"
+"Bug Tracker" = "https://github.com/yourusername/dynamic_data_reduction/issues"
 
 [tool.setuptools_scm]
-write_to = "src/ddr/_version.py"
+write_to = "src/dynamic_data_reduction/_version.py"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -65,4 +65,4 @@ target-version = ['py37']
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "-v --cov=ddr --cov-report=term-missing" 
+addopts = "-v --cov=dynamic_data_reduction --cov-report=term-missing" 
