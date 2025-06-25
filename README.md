@@ -6,13 +6,13 @@ A flexible framework for distributed data processing using MapReduce patterns.
 
 ### From PyPI (when published)
 ```bash
-pip install ddr
+pip install dynamic_data_reduction
 ```
 
 ### From source
 ```bash
-git clone https://github.com/yourusername/ddr.git
-cd ddr
+git clone https://github.com/yourusername/dynamic_data_reduction.git
+cd dynamic_data_reduction
 pip install -e .
 ```
 
@@ -20,14 +20,14 @@ pip install -e .
 
 ### Basic usage
 ```python
-from ddr import ddr
+from dynamic_data_reduction import ddr
 
 # Your code here
 ```
 
 ### Coffea specialization
 ```python
-from ddr import ddr_coffea
+from dynamic_data_reduction import ddr_coffea
 
 # Your Coffea-specific code here
 ```
@@ -37,7 +37,7 @@ from ddr import ddr_coffea
 -- Coffea use in analysis: ddr_cortado.py
 
 ```python
-from ddr import ddr_cortado
+from dynamic_data_reduction import ddr_cortado
 
 # Run the example
 ```
@@ -47,8 +47,8 @@ from ddr import ddr_cortado
 To set up the development environment:
 
 ```bash
-git clone https://github.com/yourusername/ddr.git
-cd ddr
+git clone https://github.com/yourusername/dynamic_data_reduction.git
+cd dynamic_data_reduction
 pip install -e ".[dev]"
 ```
 
