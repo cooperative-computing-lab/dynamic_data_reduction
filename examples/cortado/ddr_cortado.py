@@ -1,6 +1,6 @@
 #! /usr/bin/env python
 
-from ddr_coffea import CoffeaDynamicDataReduction
+from ddr import CoffeaDynamicDataReduction
 import ndcctools.taskvine as vine
 import json
 import pathlib

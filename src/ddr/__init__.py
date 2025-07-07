@@ -11,8 +11,6 @@ from .ddr import *  # Import main functionality
 from .ddr_coffea import *  # Import Coffea specialization
 
 __all__ = [
-    # Add your main exports here
-    # "MapReduceProcessor",
-    # "CoffeaProcessor",
-    # etc.
-] 
+    DynamicDataReduction,
+    CoffeaDynamicDataReduction
+]
