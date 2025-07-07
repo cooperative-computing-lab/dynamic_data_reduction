@@ -2,7 +2,6 @@
 
 from ddr_coffea import CoffeaDynamicDataReduction
 import ndcctools.taskvine as vine
-import cloudpickle
 import json
 import pathlib
 import pprint
