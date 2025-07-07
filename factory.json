@@ -5,7 +5,7 @@
     "xmanager-name": "coffea-vine-btovar",
     "xmanager-name": "(btovar-cortado-dynmapred|coffea-vine-btovar)",
     "manager-name": ".*btovarx.*",
-    "max-workers": 250, "min-workers": 1,
+    "max-workers": 200, "min-workers": 1,
     "workers-per-cycle": 500,
     "cores": 8,
     "memory": cores * 4000,
