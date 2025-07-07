@@ -1,14 +1,8 @@
 #! /usr/bin/env python
 
-from ddr import DynamicDataReduction, DataT, ProcT, ResultT
+from ddr import DynamicDataReduction, ProcT, ResultT
 import ndcctools.taskvine as vine
-import awkward as ak
-import json
-import pathlib
-import getpass
-import os
-from functools import partial
-from typing import Any, Callable, Hashable, Mapping, List, Optional, TypeVar, Self
+from typing import Any, Callable, Mapping, List, Optional
 
 from coffea.nanoevents import NanoAODSchema
 
@@ -174,9 +168,7 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         """Converts coffea style preprocessed data into DynMapReduce data."""
         new_data = {}
 
-        one = "WWZto4L2Nu_4F_TuneCP5_13p6TeV_amcatnlo-pythia8__Run3Summer22NanoAODv12-130X_mcRun3_2022_realistic_v5-v2__NANOAODSIM"
-        # for ds_index, (ds_name, ds_specs) in enumerate(data.items()):
-        for ds_index, (ds_name, ds_specs) in enumerate(reversed(data.items())):
+        for ds_index, (ds_name, ds_specs) in enumerate(data.items()):
             if max_datasets and ds_index >= max_datasets:
                 break
 

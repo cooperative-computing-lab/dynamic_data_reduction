@@ -892,10 +892,6 @@ class DynamicDataReduction:
                     self.manager.declare_file(path, cache=True)
                 )
 
-        self._extra_files_map[os.path.basename("ddr.py")] = self.manager.declare_file(
-            "ddr.py", cache=True
-        )
-
         self._wait_timeout = 5
         self._graph_file = None
         if self.graph_output_file:
@@ -1062,7 +1058,8 @@ class DynamicDataReduction:
         if args is None:
             args = {}
 
-        for p in self.processors.values():
+        #for p in self.processors.values():
+        for p in reversed(self.processors.values()):
             for ds_name, ds_specs in datasets.items():
                 ds = p.dataset(ds_name)
                 gen = self.source_preprocess(ds_specs, **args)

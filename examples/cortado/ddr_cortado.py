@@ -20,6 +20,7 @@ def skimmer(events):
 
     skimmed = skim_tools.make_skimmed_events(events)
     skimmed = skim_tools.uproot_writeable(skimmed)
+
     return skimmed
 
 
@@ -132,7 +133,7 @@ def ak_to_root(
     return None
 
 
-def checkpoint_postprocess(skim, results_dir, processor_name, dataset_name, size, force):
+def checkpoint_postprocess_root(skim, results_dir, processor_name, dataset_name, size, force):
     """Executes at the manager. Saves python object into root file."""
     import uuid
     import awkward as ak
@@ -150,6 +151,24 @@ def checkpoint_postprocess(skim, results_dir, processor_name, dataset_name, size
     return False
 
 
+def checkpoint_postprocess_parquet(skim, results_dir, processor_name, dataset_name, size, force):
+    """Executes at the manager. Saves python object into root file."""
+    import uuid
+    import awkward as ak
+
+    if not force and size < 1_000:
+        return True
+
+    print(f"Applying checkpoint postprocess for {processor_name}_{dataset_name} {size}")
+    dir = f"{results_dir}/{processor_name}/{dataset_name}"
+    filename = f"output-{uuid.uuid4()}.parquet"
+    pathlib.Path(dir).mkdir(parents=True, exist_ok=True)
+    ak.to_parquet(skim, f"{dir}/{filename}")
+
+    # since we saved the file, we don't need to accumualte this result upstream anymore
+    return False
+
+
 def accumulator(a, b, **kwargs):
     """Executes at the worker. Merges two awkward arrays
     from independent skim results."""
@@ -160,7 +179,7 @@ def accumulator(a, b, **kwargs):
         r = a
     else:
         import awkward as ak
-        r = ak.concatenate([a, b])
+        r = ak.concatenate([a, b], axis=0, mergebool=True)
     return r
 
 
@@ -280,8 +299,8 @@ if __name__ == "__main__":
         schema=NanoAODSchema,
         uproot_options={"timeout": 300},
         remote_executor_args={"scheduler": "threads"},
-        #result_postprocess=result_postprocess,
-        checkpoint_postprocess=checkpoint_postprocess,
+        # result_postprocess=result_postprocess,
+        checkpoint_postprocess=checkpoint_postprocess_root,
         accumulator=accumulator,
         checkpoint_accumulations=args.checkpoint_accumulations,
         checkpoint_distance=args.checkpoint_distance,
