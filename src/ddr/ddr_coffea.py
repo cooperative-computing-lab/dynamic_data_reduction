@@ -44,19 +44,34 @@ def make_source_postprocess(schema, uproot_options):
         chunk_info["metadata"]["cores"] = cores
         steps = [chunk_info["entry_start"], chunk_info["entry_stop"]]
 
-        d = {
-            chunk_info["file"]: {
-                "object_path": chunk_info["object_path"],
-                "num_entries": chunk_info["entry_stop"] - chunk_info["entry_start"],
-                "steps": steps,
-                "metadata": chunk_info["metadata"],
-            }
-        }
+        # d = {
+        #     chunk_info["file"]: {
+        #         "object_path": chunk_info["treepath"],
+        #         "num_entries": chunk_info["entry_stop"] - chunk_info["entry_start"],
+        #         "steps": steps,
+        #         "metadata": chunk_info["metadata"],
+        #     }
+        # }
+        # events = NanoEventsFactory.from_root(
+        #     d,
+        #     schemaclass=schema,
+        #     uproot_options=uproot_options,
+        #     metadata=chunk_info["metadata"],
+        #     mode="virtual"
+        # )
+        d = dict(chunk_info)
+        d["file"] = f'{d["file"]}:{d["treepath"]}'
+        del d["file"]
+        del d["treepath"]
+        del d["num_entries"]
+
         events = NanoEventsFactory.from_root(
-            d,
+            {chunk_info["file"]: chunk_info["treepath"]},
+            **d,
             schemaclass=schema,
             uproot_options=uproot_options,
-            metadata=chunk_info["metadata"],
+            #mode="virtual"
+            mode="eager"
         )
 
         return events.events()
@@ -64,7 +79,7 @@ def make_source_postprocess(schema, uproot_options):
     return source_postprocess
 
 
-def make_source_preprocess(step_size, object_path):
+def make_source_preprocess(step_size, treepath):
     def source_preprocess(dataset_info, **source_args):
         """Called at the manager. It splits single file specifications into multiple chunks specifications."""
 
@@ -79,7 +94,7 @@ def make_source_preprocess(step_size, object_path):
                 end = min(start + chunk_adapted, num_entries)
                 chunk_info = {
                     "file": file_info["file"],
-                    "object_path": object_path,
+                    "treepath": treepath,
                     "entry_start": start,
                     "entry_stop": end,
                     "num_entries": end - start,

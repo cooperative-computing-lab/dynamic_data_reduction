@@ -16,7 +16,8 @@ results_dir = "/cephfs/disc2/users/btovar/cortado"
 def skimmer(events):
     """Executes at the worker. The actual computation.
     It receives the event.events() from source_postprocess."""
-    import cortado.modules.skim_tools as skim_tools
+    import cortado.modules.skim_tools_plain as skim_tools
+    # import cortado.modules.skim_tools as skim_tools
 
     skimmed = skim_tools.make_skimmed_events(events)
     skimmed = skim_tools.uproot_writeable(skimmed)
@@ -297,7 +298,7 @@ if __name__ == "__main__":
         },
         step_size=args.step_size,
         schema=NanoAODSchema,
-        uproot_options={"timeout": 300},
+        uproot_options={"timeout": 600, "xrootdtimeout": 600},
         remote_executor_args={"scheduler": "threads"},
         # result_postprocess=result_postprocess,
         checkpoint_postprocess=checkpoint_postprocess_root,

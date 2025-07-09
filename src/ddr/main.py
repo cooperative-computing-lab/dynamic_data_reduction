@@ -99,7 +99,7 @@ def wrap_processing(
     to_maybe_compute = processor(datum_post, **processor_args)
 
     # Check if the result is a Dask object that needs to be computed
-    is_dask_object = hasattr(to_maybe_compute, "compute")
+    is_dask_object = hasattr(to_maybe_compute, "computex")
     if is_dask_object:
         # Compute the result based on the scheduler type
         if scheduler == "cloudpickle_processes" and num_workers > 0:
@@ -141,7 +141,7 @@ def wrap_processing(
 
     try:
         return len(result)
-    except:
+    except Exception:
         return 1
 
 
@@ -177,7 +177,7 @@ def accumulate(
 
     try:
         size = len(out)
-    except:
+    except Exception:
         size = len(result_names)
 
     keep_accumulating = True
@@ -203,7 +203,6 @@ def accumulate_tree(
 ):
     import dask
     import os
-    from functools import partial
 
     if not local_executor_args:
         local_executor_args = {}
@@ -244,7 +243,7 @@ def accumulate_tree(
 
     try:
         return len(out)
-    except:
+    except Exception:
         return len(results)
 
 
@@ -281,6 +280,10 @@ class ProcCounts:
     @property
     def items_done(self):
         return sum(ds.items_done for ds in self._datasets.values())
+
+    @property
+    def items_failed(self):
+        return sum(ds.items_failed for ds in self._datasets.values())
 
     @property
     def items_submitted(self):
@@ -383,18 +386,19 @@ class ProcCounts:
                 "procs",
                 completed=self.proc_tasks_done,
             )
-            if task.successful():
-                self.workflow.progress_bars.update(
-                    self,
-                    "items",
-                    completed=self.items_done,
-                )
+            # Update items progress bar to include both successful and failed items
+            self.workflow.progress_bars.update(
+                self,
+                "items",
+                completed=self.items_done + self.items_failed,
+            )
 
     def refresh_progress_bars(self):
         self.workflow.progress_bars.update(
             self,
             "items",
             total=self.items_total,
+            completed=self.items_done + self.items_failed,
         )
         self.workflow.progress_bars.update(
             self,
@@ -423,6 +427,7 @@ class DatasetCounts:
         self.active = set()
 
         self.items_done = 0
+        self.items_failed = 0
         self.items_submitted = 0
         self.proc_tasks_done = 0
         self.proc_tasks_submitted = 0
@@ -432,7 +437,7 @@ class DatasetCounts:
 
     @property
     def all_proc_done(self):
-        return self.items_done == self.items_total
+        return (self.items_done + self.items_failed) == self.items_total
 
     def add_completed(self, task):
         self.active.remove(task.id)
@@ -442,12 +447,10 @@ class DatasetCounts:
 
         if isinstance(task, DynMapRedProcessingTask):
             self.proc_tasks_done += 1
+            if task.successful():
+                self.items_done += task.input_size
         elif isinstance(task, DynMapRedAccumTask):
             self.accum_tasks_done += 1
-
-        if task.successful():
-            if isinstance(task, DynMapRedProcessingTask):
-                self.items_done += task.input_size
 
     def add_active(self, task):
         if isinstance(task, DynMapRedProcessingTask):
@@ -479,7 +482,7 @@ class DatasetCounts:
             self.all_proc_done
             and len(self.active) == 0
             and len(self.pending_accumulation) == 0
-            and self.items_total == self.items_done
+            and self.items_total == (self.items_done + self.items_failed)
         )
 
 
@@ -1058,8 +1061,8 @@ class DynamicDataReduction:
         if args is None:
             args = {}
 
-        #for p in self.processors.values():
-        for p in reversed(self.processors.values()):
+        # for p in reversed(self.processors.values()):
+        for p in self.processors.values():
             for ds_name, ds_specs in datasets.items():
                 ds = p.dataset(ds_name)
                 gen = self.source_preprocess(ds_specs, **args)
@@ -1108,6 +1111,9 @@ class DynamicDataReduction:
             finally:
                 if not resubmitted:
                     self.datasets_failed.add(task.dataset.name)
+                    # Track failed items when a processing task cannot be resubmitted
+                    if isinstance(task, DynMapRedProcessingTask):
+                        task.dataset.items_failed += task.input_size
                     self.add_accum_task(task.dataset, None)
                     print(
                         f"task {task.datum} could not be completed\n{task.std_output}\n---\n{task.output}"
