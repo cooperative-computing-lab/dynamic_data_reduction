@@ -374,6 +374,8 @@ class ProcCounts:
 
     def add_completed(self, task):
         self.dataset(task.dataset.name).add_completed(task)
+        if not task.successful():
+            return
 
         self.workflow.progress_bars.update(
             self,
@@ -392,6 +394,12 @@ class ProcCounts:
                 "items",
                 completed=self.items_done + self.items_failed,
             )
+            # Update failed items progress bar
+            self.workflow.progress_bars.update(
+                self,
+                "failed",
+                completed=self.items_failed,
+            )
 
     def refresh_progress_bars(self):
         self.workflow.progress_bars.update(
@@ -409,6 +417,12 @@ class ProcCounts:
             self,
             "accums",
             total=self.accum_tasks_total,
+        )
+        self.workflow.progress_bars.update(
+            self,
+            "failed",
+            total=self.items_total,
+            completed=self.items_failed,
         )
         self.workflow.progress_bars.refresh()
 
@@ -442,13 +456,15 @@ class DatasetCounts:
     def add_completed(self, task):
         self.active.remove(task.id)
 
+        if not task.successful():
+            return
+
         if task.is_checkpoint():
             self.accum_tasks_checkpointed += 1
 
         if isinstance(task, DynMapRedProcessingTask):
             self.proc_tasks_done += 1
-            if task.successful():
-                self.items_done += task.input_size
+            self.items_done += task.input_size
         elif isinstance(task, DynMapRedAccumTask):
             self.accum_tasks_done += 1
 
@@ -474,7 +490,7 @@ class DatasetCounts:
                 )
         self.result = r
         self.processor.workflow.progress_bars.advance(self.processor, "datasets", 1)
-        for bar_type in ["procs", "accums", "items"]:
+        for bar_type in ["procs", "accums", "items", "failed"]:
             self.processor.workflow.progress_bars.stop_task(self.processor, bar_type)
 
     def ready_for_result(self):
@@ -1131,9 +1147,30 @@ class DynamicDataReduction:
             self.progress_bars.add_task(p, "procs", total=p.proc_tasks_total)
             self.progress_bars.add_task(p, "accums", total=p.accum_tasks_total)
             self.progress_bars.add_task(p, "items", total=p.items_total)
+            self.progress_bars.add_task(p, "failed", total=p.items_total)
 
         result = self._compute_internal()
         self.refresh_progress_bars()
+
+        # Print failed items summary
+        failed_summary = {}
+        for p in self.processors.values():
+            for ds_name in self.data["datasets"]:
+                ds = p.dataset(ds_name)
+                if ds.items_failed > 0:
+                    if p.name not in failed_summary:
+                        failed_summary[p.name] = {}
+                    failed_summary[p.name][ds_name] = ds.items_failed
+
+        if failed_summary:
+            print("\nFAILED ITEMS SUMMARY:")
+            print("=" * 50)
+            for proc_name, datasets in failed_summary.items():
+                print(f"Processor: {proc_name}")
+                for ds_name, failed_count in datasets.items():
+                    print(f"  Dataset '{ds_name}': {failed_count} items failed")
+                print()
+            print("=" * 50)
 
         if self.datasets_failed:
             print("WARNING: The following datasets were not completely processed:")
