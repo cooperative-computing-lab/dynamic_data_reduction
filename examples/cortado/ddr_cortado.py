@@ -14,6 +14,31 @@ results_dir = "/cephfs/disc2/users/btovar/cortado"
 
 
 def skimmer(events):
+    def uproot_writeable(events):
+        """Restrict to columns that uproot can write compactly"""
+        out_event = events[list(x for x in events.fields if not events[x].fields)]
+        return out_event
+
+    # Some placeholder simple 4l selection
+    def make_skimmed_events(events):
+        import awkward as ak
+
+        ele = events.Electron
+        muo = events.Muon
+        nlep = ak.num(ele) + ak.num(muo)
+        mask = nlep >= 4
+        # print("e+m", nlep.compute())
+
+        return events[mask]
+
+    skimmed = make_skimmed_events(events)
+    skimmed = uproot_writeable(skimmed)
+
+    return skimmed
+
+
+
+def skimmer_from_module(events):
     """Executes at the worker. The actual computation.
     It receives the event.events() from source_postprocess."""
     import cortado.modules.skim_tools_plain as skim_tools
