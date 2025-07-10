@@ -348,11 +348,20 @@ class ProcCounts:
         return id(self)
 
     def add_dataset(self, dataset_name, dataset_specs):
+        args = self.workflow.source_preprocess_args
+        if args is None:
+            args = {}
+
+        gen = self.workflow.source_preprocess(dataset_specs, **args)
+        size = 0
+        for _, pre_size in gen:
+            size += pre_size
+
         self._datasets[dataset_name] = DatasetCounts(
             self,
             dataset_name,
             self.priority - len(self._datasets),
-            dataset_specs["size"],
+            size,
         )
 
     def dataset(self, name):
@@ -655,6 +664,7 @@ class DynMapRedTask(abc.ABC):
             checkpoint=self.checkpoint,
             final=self.final,
             attempt_number=self.attempt_number + 1,
+            input_size=self.input_size,
         )
 
     def create_new_attempts(self):
