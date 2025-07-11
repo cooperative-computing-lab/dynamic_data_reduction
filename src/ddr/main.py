@@ -464,6 +464,7 @@ class DatasetCounts:
 
     def add_completed(self, task):
         self.active.remove(task.id)
+        self.proc_tasks_done += 1  # count it regardless if successful. It should match proc_tasks_submitted at the end.
 
         if not task.successful():
             return
@@ -472,7 +473,6 @@ class DatasetCounts:
             self.accum_tasks_checkpointed += 1
 
         if isinstance(task, DynMapRedProcessingTask):
-            self.proc_tasks_done += 1
             self.items_done += task.input_size
         elif isinstance(task, DynMapRedAccumTask):
             self.accum_tasks_done += 1
