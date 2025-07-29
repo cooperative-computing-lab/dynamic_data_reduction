@@ -13,53 +13,64 @@ from coffea.nanoevents import NanoAODSchema
 results_dir = "/cephfs/disc2/users/btovar/cortado"
 
 
-def skimmer(events):
-    def uproot_writeable(events):
-        """Restrict to columns that uproot can write compactly"""
-        import awkward as ak
+def isroot_compat(a):
+    """Check if array is compatible with ROOT writing"""
+    try:
+        t = ak.type(a)
 
-        def isroot_compat(a):
-            """Check if array is compatible with ROOT writing"""
-            try:
-                t = ak.type(a)
-                
-                # Simple numeric types
-                if isinstance(t, ak.types.NumpyType):
+        # Reject union types explicitly
+        if isinstance(t, ak.types.UnionType):
+            return False
+
+        # Simple numeric types
+        if isinstance(t, ak.types.NumpyType):
+            return True
+
+        # Jagged arrays with numeric content
+        # Accept jagged or fixed-size arrays with numeric content (including one level of nesting)
+        if isinstance(t, (ak.types.ArrayType, ak.types.ListType, ak.types.RegularType)):
+            content = t.content
+            if isinstance(content, ak.types.UnionType):
+                return False
+            if isinstance(content, ak.types.NumpyType):
+                return True
+            if isinstance(content, (ak.types.ArrayType, ak.types.ListType, ak.types.RegularType)):
+                if isinstance(content.content, ak.types.UnionType):
+                    return False
+                if isinstance(content.content, ak.types.NumpyType):
                     return True
-                
-                # Jagged arrays with numeric content
-                # Accept jagged or fixed-size arrays with numeric content (including one level of nesting)
-                if isinstance(t, (ak.types.ArrayType, ak.types.ListType, ak.types.RegularType)):
-                    content = t.content
-                    if isinstance(content, ak.types.NumpyType):
-                        return True
-                    if isinstance(content, (ak.types.ArrayType, ak.types.ListType, ak.types.RegularType)):
-                        if isinstance(content.content, ak.types.NumpyType):
-                            return True
-                return False
-            except:
-                return False
+        return False
+    except:
+        return False
 
-        # Start with simple fields (no subfields)
-        out_event = events[[x for x in events.fields if not events[x].fields]]
-        
-        # Remove parameters from simple fields
-        for x in out_event.fields:
-            out_event[x] = ak.without_parameters(out_event[x])
-        
-        # Process complex fields (collections)
-        for bname in events.fields:
-            if events[bname].fields:
-                compatible_fields = {}
-                for n in events[bname].fields:
-                    cleaned_field = ak.without_parameters(events[bname][n])
-                    if isroot_compat(cleaned_field):
-                        compatible_fields[n] = cleaned_field
-                
-                if len(compatible_fields) > 0:
-                    out_event[bname] = ak.zip(compatible_fields)
-        
-        return out_event
+
+def uproot_writeable(events):
+    """Restrict to columns that uproot can write compactly"""
+    import awkward as ak
+    
+    # Start with simple fields (no subfields)
+    out_event = events[[x for x in events.fields if not events[x].fields]]
+    
+    # Remove parameters from simple fields
+    for x in out_event.fields:
+        out_event[x] = ak.without_parameters(out_event[x])
+    
+    # Process complex fields (collections)
+    for bname in events.fields:
+        if events[bname].fields:
+            compatible_fields = {}
+            for n in events[bname].fields:
+                cleaned_field = ak.without_parameters(events[bname][n])
+                if isroot_compat(cleaned_field):
+                    compatible_fields[n] = cleaned_field
+            
+            if len(compatible_fields) > 0:
+                out_event[bname] = ak.zip(compatible_fields)
+    
+    return out_event
+
+
+def skimmer(events):
 
     # Some placeholder simple 4l selection
     def make_skimmed_events(events):
@@ -248,6 +259,10 @@ def accumulator(a, b, **kwargs):
     else:
         import awkward as ak
         r = ak.concatenate([a, b], axis=0, mergebool=True)
+        
+        # Apply filtering to remove union types
+        r = uproot_writeable(r)
+    
     return r
 
 
