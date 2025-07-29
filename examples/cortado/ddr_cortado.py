@@ -34,7 +34,9 @@ def isroot_compat(a):
                 return False
             if isinstance(content, ak.types.NumpyType):
                 return True
-            if isinstance(content, (ak.types.ArrayType, ak.types.ListType, ak.types.RegularType)):
+            if isinstance(
+                content, (ak.types.ArrayType, ak.types.ListType, ak.types.RegularType)
+            ):
                 if isinstance(content.content, ak.types.UnionType):
                     return False
                 if isinstance(content.content, ak.types.NumpyType):
@@ -47,14 +49,14 @@ def isroot_compat(a):
 def uproot_writeable(events):
     """Restrict to columns that uproot can write compactly"""
     import awkward as ak
-    
+
     # Start with simple fields (no subfields)
     out_event = events[[x for x in events.fields if not events[x].fields]]
-    
+
     # Remove parameters from simple fields
     for x in out_event.fields:
         out_event[x] = ak.without_parameters(out_event[x])
-    
+
     # Process complex fields (collections)
     for bname in events.fields:
         if events[bname].fields:
@@ -63,10 +65,10 @@ def uproot_writeable(events):
                 cleaned_field = ak.without_parameters(events[bname][n])
                 if isroot_compat(cleaned_field):
                     compatible_fields[n] = cleaned_field
-            
+
             if len(compatible_fields) > 0:
                 out_event[bname] = ak.zip(compatible_fields)
-    
+
     return out_event
 
 
@@ -90,11 +92,11 @@ def skimmer(events):
     return skimmed
 
 
-
 def skimmer_from_module(events):
     """Executes at the worker. The actual computation.
     It receives the event.events() from source_postprocess."""
     import cortado.modules.skim_tools_plain as skim_tools
+
     # import cortado.modules.skim_tools as skim_tools
 
     skimmed = skim_tools.make_skimmed_events(events)
@@ -106,6 +108,7 @@ def skimmer_from_module(events):
 def result_postprocess(processor_name, dataset_name, results_dir, skim):
     """Executes at the manager. Saves python object into parquet file."""
     import awkward as ak
+
     if skim is not None:
         dir = f"{results_dir}/{processor_name}/{dataset_name}"
         pathlib.Path(dir).mkdir(parents=True, exist_ok=True)
@@ -114,7 +117,9 @@ def result_postprocess(processor_name, dataset_name, results_dir, skim):
     return None
 
 
-def checkpoint_postprocess_bad(processor_name, dataset_name, results_dir, force, index, skim):
+def checkpoint_postprocess_bad(
+    processor_name, dataset_name, results_dir, force, index, skim
+):
     """Executes at the manager. Saves python object into root file."""
     import uproot
     import awkward as ak
@@ -122,7 +127,9 @@ def checkpoint_postprocess_bad(processor_name, dataset_name, results_dir, force,
     def is_root_compat(a):
         if isinstance(a, ak.types.NumpyType):
             return True
-        elif isinstance(a, ak.types.ListType) and isinstance(a.content, ak.types.NumpyType):
+        elif isinstance(a, ak.types.ListType) and isinstance(
+            a.content, ak.types.NumpyType
+        ):
             return True
         else:
             return False
@@ -131,7 +138,11 @@ def checkpoint_postprocess_bad(processor_name, dataset_name, results_dir, force,
         out = skim[list(x for x in skim.fields if not skim[x].fields)]
         for bname in skim.fields:
             if skim[bname].fields:
-                d = {str(n): ak.without_parameters(skim[bname][n]) for n in skim[bname].fields if is_root_compat(skim[bname][n])}
+                d = {
+                    str(n): ak.without_parameters(skim[bname][n])
+                    for n in skim[bname].fields
+                    if is_root_compat(skim[bname][n])
+                }
                 if len(d) > 0:
                     out[bname] = ak.zip(d)
         return out
@@ -212,7 +223,9 @@ def ak_to_root(
     return None
 
 
-def checkpoint_postprocess_root(skim, results_dir, processor_name, dataset_name, size, force):
+def checkpoint_postprocess_root(
+    skim, results_dir, processor_name, dataset_name, size, force
+):
     """Executes at the manager. Saves python object into root file."""
     import uuid
     import awkward as ak
@@ -230,7 +243,9 @@ def checkpoint_postprocess_root(skim, results_dir, processor_name, dataset_name,
     return False
 
 
-def checkpoint_postprocess_parquet(skim, results_dir, processor_name, dataset_name, size, force):
+def checkpoint_postprocess_parquet(
+    skim, results_dir, processor_name, dataset_name, size, force
+):
     """Executes at the manager. Saves python object into root file."""
     import uuid
     import awkward as ak
@@ -258,11 +273,12 @@ def accumulator(a, b, **kwargs):
         r = a
     else:
         import awkward as ak
+
         r = ak.concatenate([a, b], axis=0, mergebool=True)
-        
+
         # Apply filtering to remove union types
         r = uproot_writeable(r)
-    
+
     return r
 
 
@@ -310,10 +326,16 @@ if __name__ == "__main__":
         "--max-tasks-active", type=int, default=4000, help="Maximum active tasks"
     )
     parser.add_argument(
-        "--max-datasets", type=int, default=None, help="Maximum number of datasets to process"
+        "--max-datasets",
+        type=int,
+        default=None,
+        help="Maximum number of datasets to process",
     )
     parser.add_argument(
-        "--max-files-per-dataset", type=int, default=None, help="Maximum number of files per dataset to process"
+        "--max-files-per-dataset",
+        type=int,
+        default=None,
+        help="Maximum number of files per dataset to process",
     )
     parser.add_argument(
         "--port-range",
@@ -361,7 +383,7 @@ if __name__ == "__main__":
         run_info_path=args.run_info_path,
     )
     mgr.tune("hungry-minimum", 1)
-    #mgr.tune("wait-for-workers", 50)
+    # mgr.tune("wait-for-workers", 50)
     mgr.enable_monitoring(watchdog=False)
 
     # Check if the X509 proxy file exists

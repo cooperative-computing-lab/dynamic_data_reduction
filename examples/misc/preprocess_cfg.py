@@ -42,9 +42,7 @@ if __name__ == "__main__":
         help="Which executor to use",
         choices=LST_OF_KNOWN_EXECUTORS,
     )
-    parser.add_argument(
-        "--output", "-o", default=None, help="Location for output file"
-    )
+    parser.add_argument("--output", "-o", default=None, help="Location for output file")
     args = parser.parse_args()
 
     input = args.sample_cfg_name
@@ -181,7 +179,7 @@ if __name__ == "__main__":
         skip_bad_files=True,
         save_form=True,
         scheduler=executor,
-        file_exceptions=(Exception,)
+        file_exceptions=(Exception,),
     )
 
     bad = set(dataset_all.keys()) - set(dataset_runnable.keys())

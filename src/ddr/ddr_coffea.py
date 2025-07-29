@@ -70,8 +70,8 @@ def make_source_postprocess(schema, uproot_options):
             **d,
             schemaclass=schema,
             uproot_options=uproot_options,
-            #mode="virtual"
-            mode="eager"
+            # mode="virtual"
+            mode="eager",
         )
 
         return events.events()

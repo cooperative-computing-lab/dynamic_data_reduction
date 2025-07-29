@@ -91,7 +91,7 @@ def source_postprocess(chunk_info, **source_args):
         chunk_info["file"]: {
             "object_path": chunk_info["object_path"],
             "metadata": chunk_info["metadata"],
-            "steps": steps
+            "steps": steps,
         }
     }
 
@@ -163,8 +163,8 @@ def make_processor():
             axis=1,
         )
 
-        fatjet_limit_lower = 450    # 400
-        fatjet_limit_upper = 900   # 1200
+        fatjet_limit_lower = 450  # 400
+        fatjet_limit_upper = 900  # 1200
 
         # onemuon = (nmuons == 1) & (nelectrons == 0) & (ntaus == 0)
         nolepton = (nmuons == 0) & (nelectrons == 0) & (ntaus == 0)
@@ -344,6 +344,7 @@ def make_processor():
 
 def accumulator(a, b):
     import awkward as ak
+
     return ak.concatenate(a, b, axis=1)
     # if not isinstance(a, list):
     #     a = [a]
@@ -369,7 +370,7 @@ def checkpoint_fn(t):
 
 def coffea_preprocess_to_dynmapred(data):
     data_b = {}
-    for (i, (k, v)) in enumerate(data.items()):
+    for i, (k, v) in enumerate(data.items()):
         # if k.startswith("ttboosted"):
         #     continue
         # if i > 0:
@@ -379,7 +380,7 @@ def coffea_preprocess_to_dynmapred(data):
         v_b = dict(v)
         del v_b["files"]
 
-        for (j, (filename, file_info)) in enumerate(v["files"].items()):
+        for j, (filename, file_info) in enumerate(v["files"].items()):
             d = {"file": filename}
             d.update(file_info)
             d.update(v_b)
@@ -404,7 +405,9 @@ if __name__ == "__main__":
 
     data = coffea_preprocess_to_dynmapred(data)
 
-    mgr = vine.Manager(port=[9123, 9129], name="btovar-dynmapred", staging_path="/tmp/btovar")
+    mgr = vine.Manager(
+        port=[9123, 9129], name="btovar-dynmapred", staging_path="/tmp/btovar"
+    )
     mgr.tune("hungry-minimum", 1)
     mgr.enable_monitoring(watchdog=False)
 
@@ -412,9 +415,7 @@ if __name__ == "__main__":
         mgr,
         source_preprocess=source_preprocess,
         source_postprocess=source_postprocess,
-        processors={
-            "skimmer": make_processor()
-        },
+        processors={"skimmer": make_processor()},
         accumulator=accumulator,
         accumulation_size=10,
         file_replication=3,
@@ -439,9 +440,6 @@ if __name__ == "__main__":
                 dir = f"/scratch365/btovar/ecf_calculator_output/{dataset}/"
                 dir = f"/tmp/btovar/results/{dataset}/"
                 pathlib.Path(dir).mkdir(parents=True, exist_ok=True)
-                ak.to_parquet(
-                    skim,
-                    f"{dir}/output.parquet"
-                )
+                ak.to_parquet(skim, f"{dir}/output.parquet")
 
     pprint.pprint(result)

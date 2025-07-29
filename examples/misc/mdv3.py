@@ -136,27 +136,21 @@ def make_processor(name):
             return hcr_var
 
         elif "D2" == name:
-            d2 = ak.unflatten(
-                d2_calc(boosted_fatjet), counts=ak.num(boosted_fatjet)
-            )
+            d2 = ak.unflatten(d2_calc(boosted_fatjet), counts=ak.num(boosted_fatjet))
             boosted_fatjet["d2b1"] = d2
             d2b1 = dhist.Hist.new.Reg(40, 0, 3, name="D2B1", label="D2B1").Weight()
             d2b1.fill(D2B1=ak.flatten(boosted_fatjet.d2b1))
             return d2b1
 
         elif "D3" == name:
-            d3 = ak.unflatten(
-                d3_calc(boosted_fatjet), counts=ak.num(boosted_fatjet)
-            )
+            d3 = ak.unflatten(d3_calc(boosted_fatjet), counts=ak.num(boosted_fatjet))
             boosted_fatjet["d3b1"] = d3
             d3b1 = dhist.Hist.new.Reg(40, 0, 3, name="D3B1", label="D3B1").Weight()
             d3b1.fill(D3B1=ak.flatten(boosted_fatjet.d3b1))
             return d3b1
 
         elif "N4" == name:
-            n4 = ak.unflatten(
-                n4_calc(boosted_fatjet), counts=ak.num(boosted_fatjet)
-            )
+            n4 = ak.unflatten(n4_calc(boosted_fatjet), counts=ak.num(boosted_fatjet))
             boosted_fatjet["n4b1"] = n4
             n4b1 = dhist.Hist.new.Reg(40, 0, 35, name="N4B1", label="N4B1").Weight()
             n4b1.fill(N4B1=ak.flatten(boosted_fatjet.n4b1))
@@ -167,9 +161,7 @@ def make_processor(name):
                 u_calc(boosted_fatjet, n=1), counts=ak.num(boosted_fatjet)
             )
             boosted_fatjet["u1b1"] = u1
-            u1b1 = dhist.Hist.new.Reg(
-                40, 0, 0.3, name="U1B1", label="U1B1"
-            ).Weight()
+            u1b1 = dhist.Hist.new.Reg(40, 0, 0.3, name="U1B1", label="U1B1").Weight()
             u1b1.fill(U1B1=ak.flatten(boosted_fatjet.u1b1))
             return u1b1
 
@@ -178,9 +170,7 @@ def make_processor(name):
                 u_calc(boosted_fatjet, n=2), counts=ak.num(boosted_fatjet)
             )
             boosted_fatjet["u2b1"] = u2
-            u2b1 = dhist.Hist.new.Reg(
-                40, 0, 0.05, name="U2B1", label="U2B1"
-            ).Weight()
+            u2b1 = dhist.Hist.new.Reg(40, 0, 0.05, name="U2B1", label="U2B1").Weight()
             u2b1.fill(U2B1=ak.flatten(boosted_fatjet.u2b1))
             return u2b1
 
@@ -189,9 +179,7 @@ def make_processor(name):
                 u_calc(boosted_fatjet, n=3), counts=ak.num(boosted_fatjet)
             )
             boosted_fatjet["u3b1"] = u3
-            u3b1 = dhist.Hist.new.Reg(
-                40, 0, 0.05, name="U3B1", label="U3B1"
-            ).Weight()
+            u3b1 = dhist.Hist.new.Reg(40, 0, 0.05, name="U3B1", label="U3B1").Weight()
             u3b1.fill(U3B1=ak.flatten(boosted_fatjet.u3b1))
             return u3b1
 
@@ -226,9 +214,7 @@ def make_processor(name):
             return ncons
 
         elif "Mass" == name:
-            mass = dhist.Hist.new.Reg(
-                40, 0, 250, name="mass", label="Mass"
-            ).Weight()
+            mass = dhist.Hist.new.Reg(40, 0, 250, name="mass", label="Mass").Weight()
             mass.fill(mass=ak.flatten(boosted_fatjet.mass))
             return mass
 
@@ -381,7 +367,9 @@ if __name__ == "__main__":
 
         # data = {"hbb": data["hbb"]}
 
-    mgr = vine.Manager(port=[9123, 9129], name="btovar-dynmapred", staging_path="/tmp/btovar")
+    mgr = vine.Manager(
+        port=[9123, 9129], name="btovar-dynmapred", staging_path="/tmp/btovar"
+    )
     mgr.tune("hungry-minimum", 1)
 
     dmr = DynMapReduce(
@@ -389,7 +377,8 @@ if __name__ == "__main__":
         source_preprocess=source_preprocess,
         source_postprocess=source_postprocess,
         processors={
-            name: make_processor(name) for name in ["Color_Ring_Var"]
+            name: make_processor(name)
+            for name in ["Color_Ring_Var"]
             # name: make_processor(name) for name in ["Mass", "SDmass", "Btag", "MRatio", "N2", "N3", "nConstituents"]
             # name: make_processor(name) for name in [ "SDmass" ]
         },

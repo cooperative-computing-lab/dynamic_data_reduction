@@ -316,7 +316,9 @@ class ProcCounts:
         elif items_submitted == 0:
             return 1
         elif tasks_submitted_good == 0:
-            return math.ceil((items_total / items_submitted) * self.proc_tasks_submitted)
+            return math.ceil(
+                (items_total / items_submitted) * self.proc_tasks_submitted
+            )
         else:
             return math.ceil((items_total / items_submitted) * tasks_submitted_good)
 
@@ -380,7 +382,7 @@ class ProcCounts:
             self,
             "procs done",
             total=self.proc_tasks_total,
-            completed=self.proc_tasks_done
+            completed=self.proc_tasks_done,
         )
         self.workflow.progress_bars.update(
             self,
@@ -527,7 +529,13 @@ class DatasetCounts:
                 )
         self.result = r
         self.processor.workflow.progress_bars.advance(self.processor, "datasets", 1)
-        for bar_type in ["procs done", "procs failed", "accums", "items done", "items failed"]:
+        for bar_type in [
+            "procs done",
+            "procs failed",
+            "accums",
+            "items done",
+            "items failed",
+        ]:
             self.processor.workflow.progress_bars.stop_task(self.processor, bar_type)
 
     def ready_for_result(self):

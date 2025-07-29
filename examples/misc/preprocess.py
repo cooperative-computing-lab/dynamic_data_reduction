@@ -76,7 +76,9 @@ except (IOError, EOFError, FileNotFoundError):
         for ds, info in datasets.items():
             all_files[ds] = []
             for path in pathlib.Path(f"{source_root}/{info['path']}").glob("*.root"):
-                all_files[ds].append({"file": str(path.absolute()), "label": info['label']})
+                all_files[ds].append(
+                    {"file": str(path.absolute()), "label": info["label"]}
+                )
         print(all_files)
 
         with open("dv3_all_files.pkl", "wb") as f:

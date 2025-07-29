@@ -113,4 +113,3 @@ def u_calc(fatjet, n):
     if n == 3:
         u = softdrop_cluster.exclusive_jets_energy_correlator(func="u3")
     return u
-
