@@ -15,6 +15,8 @@ results_dir = "/cephfs/disc2/users/btovar/cortado"
 
 def isroot_compat(a):
     """Check if array is compatible with ROOT writing"""
+    import awkward as ak
+
     try:
         t = ak.type(a)
 
