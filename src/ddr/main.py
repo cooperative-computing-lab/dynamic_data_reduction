@@ -133,8 +133,14 @@ def wrap_processing(
                         scheduler="threads", pool=executor, num_workers=num_workers
                     )
     else:
-        # If not a Dask object, just use the result directly
+        # If not a Dask object, just use the result directly and try to materialize it from virtual arrays
         result = to_maybe_compute
+
+        # Add some debugging information
+        try:
+            result = to_maybe_compute.compute()
+        except Exception as e:
+            warnings.warn(f"Materialization failed: {str(e)}")
 
     with lz4.frame.open("task_output.p", "wb") as fp:
         cloudpickle.dump(result, fp)
@@ -156,7 +162,6 @@ def accumulate(
     force,
 ):
     out = None
-
     for r in sorted(result_names):
         with lz4.frame.open(r, "rb") as fp:
             other = cloudpickle.load(fp)
@@ -234,10 +239,11 @@ def accumulate_tree(
             to_reduce[:accumulator_n_args],
             to_reduce[accumulator_n_args:],
         )
-        task_graph[key] = (accumulator_w_kwargs, *firsts)
+        task_graph[key] = (accumulator, *firsts)
         to_reduce.append(key)
 
     out = dask.get(task_graph, to_reduce[0], **local_executor_args)
+    
     with lz4.frame.open("task_output.p", "wb") as fp:
         cloudpickle.dump(out, fp)
 

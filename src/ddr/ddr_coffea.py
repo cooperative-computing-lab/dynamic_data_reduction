@@ -70,13 +70,65 @@ def make_source_postprocess(schema, uproot_options):
             **d,
             schemaclass=schema,
             uproot_options=uproot_options,
-            # mode="virtual"
-            mode="eager",
+            mode="virtual"
         )
 
         return events.events()
 
     return source_postprocess
+
+
+def call_processor(processor, events, **processor_args):
+    """Wrapper function that calls the processor and materializes virtual arrays if needed."""
+    # Call the processor function
+    result = processor(events, **processor_args)
+    
+    # Materialize virtual arrays in the result if needed
+    def materialize_virtual_arrays(obj):
+        """Recursively materialize virtual arrays to make them serializable."""
+        import awkward as ak
+        import numpy as np
+        
+        def _materialize_recursive(item):
+            try:
+                # Try to materialize using ak.materialize
+                materialized = ak.materialize(item)
+                # Force materialization by accessing the data
+                if hasattr(materialized, 'layout'):
+                    # Access the layout to ensure it's fully materialized
+                    _ = materialized.layout
+                    if hasattr(materialized.layout, 'content'):
+                        _ = materialized.layout.content
+                # Also try to get the length to force evaluation
+                _ = len(materialized)
+                return materialized
+            except Exception:
+                # If it's not an awkward array or materialization fails, handle recursively
+                if isinstance(item, dict):
+                    return {k: _materialize_recursive(v) for k, v in item.items()}
+                elif isinstance(item, (list, tuple)):
+                    return type(item)(_materialize_recursive(v) for v in item)
+                elif hasattr(item, '__iter__') and not isinstance(item, (str, bytes, np.ndarray)):
+                    try:
+                        return type(item)(_materialize_recursive(v) for v in item)
+                    except Exception:
+                        return item
+                else:
+                    return item
+        
+        # Add some debugging information
+        try:
+            result = _materialize_recursive(obj)
+            return result
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Materialization failed: {str(e)}")
+            return obj
+    
+    # Materialize any virtual arrays in the result
+    result = materialize_virtual_arrays(result)
+    
+    return result
 
 
 def make_source_preprocess(step_size, treepath):
@@ -149,9 +201,12 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         max_files_per_dataset: Optional[int] = None,
     ):
 
+        # Wrap processors to handle virtual array materialization
+        wrapped_processors = self._wrap_processors(processors)
+        
         super().__init__(
             manager=manager,
-            processors=processors,
+            processors=wrapped_processors,
             data=self.from_coffea_preprocess(data, max_datasets, max_files_per_dataset),
             accumulation_size=accumulation_size,
             accumulator=accumulator,
@@ -221,3 +276,18 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
                     "size": dataset_events,
                 }
         return {"datasets": new_data, "size": total_events}
+    def _wrap_processors(self, processors):
+        """Wrap processors to handle virtual array materialization."""
+        if isinstance(processors, dict):
+            return {name: self._wrap_single_processor(proc) for name, proc in processors.items()}
+        elif isinstance(processors, list):
+            return [self._wrap_single_processor(proc) for proc in processors]
+        else:
+            return self._wrap_single_processor(processors)
+    
+    def _wrap_single_processor(self, processor):
+        """Wrap a single processor function."""
+        def wrapped_processor(events, **processor_args):
+            return call_processor(processor, events, **processor_args)
+        return wrapped_processor
+
