@@ -232,7 +232,7 @@ def checkpoint_postprocess_root(
     import uuid
     import awkward as ak
 
-    if not force and size < 1_000:
+    if not force and size < 2_000:
         return True
 
     print(f"Applying checkpoint postprocess for {processor_name}_{dataset_name} {size}")
@@ -280,6 +280,10 @@ def accumulator(a, b, **kwargs):
 
         # Apply filtering to remove union types
         r = uproot_writeable(r)
+
+    # Check that the result has an Electron field
+    # if r is not None and "Electron" not in r.fields:
+    #     raise ValueError("Accumulation result is missing required 'Electron' field")
 
     return r
 
