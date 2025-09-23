@@ -243,7 +243,7 @@ def accumulate_tree(
         to_reduce.append(key)
 
     out = dask.get(task_graph, to_reduce[0], **local_executor_args)
-    
+
     with lz4.frame.open("task_output.p", "wb") as fp:
         cloudpickle.dump(out, fp)
 
@@ -892,6 +892,7 @@ class DynamicDataReduction:
     source_preprocess_args: Optional[Mapping[str, Any]] = None
     x509_proxy: Optional[str] = None
     graph_output_file: bool = True
+    skip_datasets: Optional[List[str]] = None
 
     def __post_init__(self):
         def name(p):
