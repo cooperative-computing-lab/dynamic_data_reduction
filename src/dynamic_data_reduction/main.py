@@ -893,6 +893,7 @@ class DynamicDataReduction:
     x509_proxy: Optional[str] = None
     graph_output_file: bool = True
     skip_datasets: Optional[List[str]] = None
+    resource_monitor: str | bool | None = "measure"
 
     def __post_init__(self):
         def name(p):
@@ -949,6 +950,9 @@ class DynamicDataReduction:
         self.manager.tune("temp-replica-count", self.file_replication)
         self.manager.tune("immediate-recovery", 1)
 
+        # Configure resource monitoring
+        self._configure_resource_monitoring()
+
         self._extra_files_map = {
             "dynmapred.py": self.manager.declare_file(__file__, cache=True)
         }
@@ -997,6 +1001,35 @@ class DynamicDataReduction:
         libtask.add_environment(envf)
         self.manager.install_library(libtask)
         self._env = envf
+
+    def _configure_resource_monitoring(self):
+        """Configure taskvine resource monitoring based on the resource_monitor parameter."""
+        # Handle backward compatibility for boolean values
+        if isinstance(self.resource_monitor, bool):
+            if self.resource_monitor:
+                monitor_mode = "measure"
+            else:
+                monitor_mode = "off"
+        elif self.resource_monitor is None:
+            monitor_mode = "off"
+        else:
+            monitor_mode = self.resource_monitor
+
+        # Configure monitoring based on the mode
+        if monitor_mode == "off":
+            # No monitoring - do nothing
+            pass
+        elif monitor_mode == "measure":
+            # Basic resource measurement without watchdog
+            self.manager.enable_monitoring(watchdog=False, time_series=False)
+        elif monitor_mode == "watchdog":
+            # Resource measurement with watchdog
+            self.manager.enable_monitoring(watchdog=True, time_series=False)
+        else:
+            raise ValueError(
+                f"Invalid resource_monitor value: {self.resource_monitor}. "
+                f"Must be one of: 'measure', 'watchdog', 'off', True, False, or None"
+            )
 
     def _set_resources(self):
         for ds in self.data["datasets"]:
