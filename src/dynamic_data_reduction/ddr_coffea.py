@@ -1,6 +1,6 @@
 #! /usr/bin/env python
 
-from ddr import DynamicDataReduction, ProcT, ResultT
+from .main import DynamicDataReduction, ProcT, ResultT
 import ndcctools.taskvine as vine
 from typing import Any, Callable, Mapping, List, Optional
 

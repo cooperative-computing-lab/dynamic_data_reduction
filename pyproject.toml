@@ -44,7 +44,7 @@ dev = [
 ]
 
 [project.scripts]
-dynamic_data_reduction = "dynamic_data_reduction.ddr:main"
+dynamic_data_reduction = "dynamic_data_reduction.main:main"
 
 [project.urls]
 Homepage = "https://github.com/yourusername/dynamic_data_reduction"
@@ -53,7 +53,7 @@ Documentation = "https://github.com/yourusername/dynamic_data_reduction#readme"
 "Bug Tracker" = "https://github.com/yourusername/dynamic_data_reduction/issues"
 
 [tool.setuptools_scm]
-write_to = "src/ddr/_version.py"
+write_to = "src/dynamic_data_reduction/_version.py"
 
 [tool.setuptools.packages.find]
 where = ["src"]

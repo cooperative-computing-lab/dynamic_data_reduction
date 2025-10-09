@@ -1,7 +1,7 @@
 """Tests for the main ddr module."""
 
 import pytest
-from ddr import ddr
+import dynamic_data_reduction as ddr
 
 
 def test_basic_functionality():

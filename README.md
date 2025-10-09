@@ -20,14 +20,14 @@ pip install -e .
 
 ### Basic usage
 ```python
-from dynamic_data_reduction import ddr
+import dynamic_data_reduction as ddr
 
 # Your code here
 ```
 
 ### Coffea specialization
 ```python
-from dynamic_data_reduction import ddr_coffea
+import dynamic_data_reduction.ddr_coffea as ddr_coffea
 
 # Your Coffea-specific code here
 ```
@@ -37,7 +37,7 @@ from dynamic_data_reduction import ddr_coffea
 -- Coffea use in analysis: ddr_cortado.py
 
 ```python
-from dynamic_data_reduction import ddr_cortado
+import dynamic_data_reduction.ddr_cortado as ddr_cortado
 
 # Run the example
 ```
