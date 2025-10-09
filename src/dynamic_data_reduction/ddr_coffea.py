@@ -204,6 +204,7 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         max_files_per_dataset: Optional[int] = None,
         skip_datasets: Optional[List[str]] = None,
         resource_monitor: str | bool | None = "measure",
+        verbose: bool = True,
     ):
 
         # Wrap processors to handle virtual array materialization
@@ -239,6 +240,7 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             source_preprocess=make_source_preprocess(step_size, object_path),
             skip_datasets=skip_datasets,
             resource_monitor=resource_monitor,
+            verbose=verbose,
         )
 
     def from_coffea_preprocess(
