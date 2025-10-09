@@ -50,7 +50,6 @@ if __name__ == "__main__":
         processors={"double": processor_double_data, "triple": processor_triple_data},
         accumulator=reducer_add_data,
         accumulation_size=10,
-        extra_files=["main.py"],
     )
 
     workers = vine.Factory("local", manager=mgr)
