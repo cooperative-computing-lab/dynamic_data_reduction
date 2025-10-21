@@ -11,6 +11,9 @@ def make_source_postprocess(schema, uproot_options):
     """Called at the worker. Rechunks chunk specification to use many cores,
     and created a NanoEventsFactory per chunk."""
 
+    if uproot_options is None:
+        uproot_options = {}
+
     def source_postprocess(chunk_info, **kwargs):
         from coffea.nanoevents import NanoEventsFactory
         import os
@@ -44,21 +47,6 @@ def make_source_postprocess(schema, uproot_options):
         chunk_info["metadata"]["cores"] = cores
         steps = [chunk_info["entry_start"], chunk_info["entry_stop"]]
 
-        # d = {
-        #     chunk_info["file"]: {
-        #         "object_path": chunk_info["treepath"],
-        #         "num_entries": chunk_info["entry_stop"] - chunk_info["entry_start"],
-        #         "steps": steps,
-        #         "metadata": chunk_info["metadata"],
-        #     }
-        # }
-        # events = NanoEventsFactory.from_root(
-        #     d,
-        #     schemaclass=schema,
-        #     uproot_options=uproot_options,
-        #     metadata=chunk_info["metadata"],
-        #     mode="virtual"
-        # )
         d = dict(chunk_info)
         d["file"] = f'{d["file"]}:{d["treepath"]}'
         del d["file"]
@@ -69,7 +57,7 @@ def make_source_postprocess(schema, uproot_options):
             {chunk_info["file"]: chunk_info["treepath"]},
             **d,
             schemaclass=schema,
-            uproot_options=uproot_options,
+            uproot_options=dict(uproot_options),
             mode="virtual",
         )
 
@@ -208,7 +196,7 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
     ):
 
         # Wrap processors to handle virtual array materialization
-        wrapped_processors = self._wrap_processors(processors)
+        wrapped_processors = self._normalize_processors(processors)
 
         super().__init__(
             manager=manager,
@@ -297,24 +285,49 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
                 }
                 total_events += dataset_events
 
+        print({"datasets": new_data, "size": total_events})
+
         return {"datasets": new_data, "size": total_events}
 
-    def _wrap_processors(self, processors):
-        """Wrap processors to handle virtual array materialization."""
+    def _normalize_processors(self, processors):
+        """
+        Normalize each processor in self.processors.
+        If proc has a callable 'processor' attribute, use proc.processor. 
+        If proc is already callable, use it directly.
+        """
+        def get_callable_processor(proc):
+            # If the object has a 'processor' attribute and it is callable, use it
+            # Always wrap the proc for virtual array materialization
+            def wrap(proc_callable):
+                def wrapped(events, **processor_args):
+                    return call_processor(proc_callable, events, **processor_args)
+                return wrapped
+
+            if hasattr(proc, "process") and callable(getattr(proc, "process")):
+                return wrap(getattr(proc, "process"))
+            elif callable(proc):
+                return wrap(proc)
+            else:
+                raise ValueError("Processor must be callable or have a callable 'process' attribute.")
+        
         if isinstance(processors, dict):
-            return {
-                name: self._wrap_single_processor(proc)
-                for name, proc in processors.items()
-            }
+            normalized = {}
+            for name, proc in processors.items():
+                normalized[name] = get_callable_processor(proc)
+            return normalized
         elif isinstance(processors, list):
-            return [self._wrap_single_processor(proc) for proc in processors]
+            return [get_callable_processor(proc) for proc in processors]
         else:
-            return self._wrap_single_processor(processors)
+            return get_callable_processor(processors)
 
-    def _wrap_single_processor(self, processor):
-        """Wrap a single processor function."""
-
-        def wrapped_processor(events, **processor_args):
-            return call_processor(processor, events, **processor_args)
-
-        return wrapped_processor
+    def _normalize_accumulator(self, accumulator):
+        """
+        Normalize the accumulator function.
+        If the accumulator is a callable, use it directly.
+        If the accumulator is a string, import it from the accumulators module.
+        """
+        if callable(accumulator):
+            return accumulator
+        elif isinstance(accumulator, str):
+            from .accumulators import import_accumulator
+            return import_accumulator(accumulator)
