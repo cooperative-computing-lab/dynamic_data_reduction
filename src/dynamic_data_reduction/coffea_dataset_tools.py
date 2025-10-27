@@ -103,19 +103,14 @@ def _initialize_result_data(data):
 
 
 def _update_progress_description(
-    progress, main_task, submitted_files_count, pending_files_count, completed_files_count, batch_task=None, submitted_batches_count=0, pending_batches_count=0, completed_batches=0, total_batches=0
+    progress, main_task, submitted_files_count, completed_files_count, total_files_count, batch_task=None, submitted_batches_count=0, completed_batches=0, total_batches=0
 ):
     """Update progress bar with current status."""
-    if progress:
-        progress.update(
-            main_task,
-            description=f"Preprocessing files: {completed_files_count} completed, {submitted_files_count} running, {pending_files_count} pending",
-        )
-        if batch_task is not None:
-            progress.update(
-                batch_task,
-                description=f"Preprocessing batches: {completed_batches} completed, {submitted_batches_count} running, {pending_batches_count} pending",
-            )
+    if not progress:
+        return
+
+    progress.update(main_task, description=f"Preprocessing files: {completed_files_count} completed, {submitted_files_count} submitted", total=total_files_count, completed=completed_files_count)
+    progress.update(batch_task, description=f"Preprocessing batches: {completed_batches} completed, {submitted_batches_count} submitted", total=total_batches, completed=completed_batches)
 
 
 def _process_file_with_timeout(file_path, tree_name, timeout):
@@ -246,16 +241,15 @@ def preprocess(
             # Update progress bar with current status
             if show_progress:
                 _update_progress_description(
-                    progress,
-                    main_task,
-                    len(submitted_tasks),
-                    len(files_to_process_queue),
-                    completed_files_count,
-                    batch_task,
-                    len(submitted_tasks),
-                    len(files_to_process_queue),
-                    completed_batches,
-                    total_batches,
+                    progress=progress,
+                    main_task=main_task,
+                    submitted_files_count=len(submitted_tasks),
+                    total_files_count=len(files_to_process),
+                    completed_files_count=completed_files_count,
+                    batch_task=batch_task,
+                    submitted_batches_count=len(submitted_tasks),
+                    completed_batches=completed_batches,
+                    total_batches=total_batches,
                 )
 
         # Wait for a task to complete
@@ -317,14 +311,15 @@ def preprocess(
         # Update progress bar with current status
         if show_progress:
             _update_progress_description(
-                progress,
-                main_task,
-                len(submitted_tasks),
-                len(files_to_process_queue),
-                completed_files_count,
-                batch_task,
-                completed_batches,
-                total_batches,
+                progress=progress,
+                main_task=main_task,
+                submitted_files_count=len(submitted_tasks),
+                total_files_count=len(files_to_process),
+                completed_files_count=completed_files_count,
+                batch_task=batch_task,
+                submitted_batches_count=len(submitted_tasks),
+                completed_batches=completed_batches,
+                total_batches=total_batches,
             )
 
     # Finalize progress bar

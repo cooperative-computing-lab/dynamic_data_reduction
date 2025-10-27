@@ -4,53 +4,55 @@ A flexible framework for distributed data processing using MapReduce patterns.
 
 ## Installation
 
+### Prerequisites
+
+This project requires Python 3.13+ and uses conda for dependency management. We recommend using the provided `environment.yml` file to create a consistent development environment.
+
+### Setting up the Conda Environment
+
+1. **Create the conda environment from the provided environment.yml file:**
+   ```bash
+   conda env create -f environment.yml
+   ```
+
+2. **Activate the environment:**
+   ```bash
+   conda activate ddr
+   ```
+
+3. **Verify the installation:**
+   ```bash
+   python --version  # Should show Python 3.13.2
+   conda list | grep -E "(coffea|ndcctools)"  # Should show the installed packages
+   ```
+
+### Installing from Source
+
 ### From PyPI (when published)
 ```bash
 pip install dynamic_data_reduction
 ```
 
-### From source
+Once you have the conda environment set up:
+
 ```bash
+# Clone the repository
 git clone https://github.com/yourusername/dynamic_data_reduction.git
 cd dynamic_data_reduction
+
+# Activate the conda environment (if not already active)
+conda activate ddr
+
+# Install the package in development mode
 pip install -e .
 ```
 
 ## Usage
 
-### Basic usage
-```python
-import dynamic_data_reduction as ddr
+- General use example: [examples/simple/simple-example.py](examples/simple/simple-example.py)
+- Using Coffea Processors Classes Directly: [examples/coffea_processor/example_with_preprocess.py](examples/coffea_processor/example_with_preprocess.py)
+- Coffea use in analysis: [examples/cortado/ddr_cortado.py](examples/cortado/ddr_cortado.py)
 
-# Your code here
-```
-
-### Coffea specialization
-```python
-import dynamic_data_reduction.ddr_coffea as ddr_coffea
-
-# Your Coffea-specific code here
-```
-
-### Example usage
--- General use example: simple-example.py
--- Coffea use in analysis: ddr_cortado.py
-
-```python
-import dynamic_data_reduction.ddr_cortado as ddr_cortado
-
-# Run the example
-```
-
-## Development
-
-To set up the development environment:
-
-```bash
-git clone https://github.com/yourusername/dynamic_data_reduction.git
-cd dynamic_data_reduction
-pip install -e ".[dev]"
-```
 
 ## License
 

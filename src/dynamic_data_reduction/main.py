@@ -386,15 +386,10 @@ class ProcCounts:
 
         self.workflow.progress_bars.update(
             self,
-            "procs done",
+            "procs",
             total=self.proc_tasks_total,
             completed=self.proc_tasks_done,
-        )
-        self.workflow.progress_bars.update(
-            self,
-            "procs failed",
-            total=self.proc_tasks_submitted,
-            completed=self.proc_tasks_failed,
+            description=f"procs ({self.name}): {self.proc_tasks_done} done, {self.proc_tasks_failed} failed",
         )
         self.workflow.progress_bars.update(
             self,
@@ -415,56 +410,37 @@ class ProcCounts:
         if isinstance(task, DynMapRedProcessingTask):
             self.workflow.progress_bars.update(
                 self,
-                "procs done",
+                "procs",
                 completed=self.proc_tasks_done,
-            )
-            self.workflow.progress_bars.update(
-                self,
-                "procs failed",
-                completed=self.proc_tasks_failed,
+                description=f"procs ({self.name}): {self.proc_tasks_done} done, {self.proc_tasks_failed} failed",
             )
             # Update items progress bar to include both successful and failed items
             self.workflow.progress_bars.update(
                 self,
-                "items done",
+                "items",
                 completed=self.items_done + self.items_failed,
-            )
-            # Update failed items progress bar
-            self.workflow.progress_bars.update(
-                self,
-                "items failed",
-                completed=self.items_failed,
+                description=f"items ({self.name}): {self.items_done} done, {self.items_failed} failed",
             )
 
     def refresh_progress_bars(self):
         self.workflow.progress_bars.update(
             self,
-            "items done",
+            "items",
             total=self.items_total,
             completed=self.items_done + self.items_failed,
+            description=f"items ({self.name}): {self.items_done} done, {self.items_failed} failed",
         )
         self.workflow.progress_bars.update(
             self,
-            "procs done",
+            "procs",
             total=self.proc_tasks_total,
             completed=self.proc_tasks_done,
+            description=f"procs ({self.name}): {self.proc_tasks_done} done, {self.proc_tasks_failed} failed",
         )
         self.workflow.progress_bars.update(
             self,
             "accums",
             total=self.accum_tasks_total,
-        )
-        self.workflow.progress_bars.update(
-            self,
-            "items failed",
-            total=self.items_total,
-            completed=self.items_failed,
-        )
-        self.workflow.progress_bars.update(
-            self,
-            "procs failed",
-            total=self.proc_tasks_submitted,
-            completed=self.proc_tasks_failed,
         )
         self.workflow.progress_bars.refresh()
 
@@ -536,11 +512,10 @@ class DatasetCounts:
         self.result = r
         self.processor.workflow.progress_bars.advance(self.processor, "datasets", 1)
         for bar_type in [
-            "procs done",
-            "procs failed",
+            "datasets",
+            "items",
+            "procs",
             "accums",
-            "items done",
-            "items failed",
         ]:
             self.processor.workflow.progress_bars.stop_task(self.processor, bar_type)
 
@@ -1258,11 +1233,9 @@ class DynamicDataReduction:
         self.progress_bars = ProgressBar()
         for p in self.processors.values():
             self.progress_bars.add_task(p, "datasets", total=len(self.data["datasets"]))
-            self.progress_bars.add_task(p, "items done", total=p.items_total)
-            self.progress_bars.add_task(p, "procs done", total=p.proc_tasks_total)
+            self.progress_bars.add_task(p, "items", total=p.items_total)
+            self.progress_bars.add_task(p, "procs", total=p.proc_tasks_total)
             self.progress_bars.add_task(p, "accums", total=p.accum_tasks_total)
-            self.progress_bars.add_task(p, "procs failed", total=p.proc_tasks_submitted)
-            self.progress_bars.add_task(p, "items failed", total=p.items_total)
 
         result = self._compute_internal()
         self.refresh_progress_bars()
