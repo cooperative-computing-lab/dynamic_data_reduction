@@ -7,32 +7,35 @@ name = "dynamic_data_reduction"
 dynamic = ["version"]
 description = "Dynamic MapReduce framework for data processing"
 readme = "README.md"
-license = {text = "MIT"}
+license = {text = "Apache-2.0"}
 authors = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "B. Tovar", email = "btovar@example.com"},
 ]
 maintainers = [
-    {name = "Your Name", email = "your.email@example.com"},
+    {name = "B. Tovar", email = "btovar@example.com"},
 ]
 keywords = ["mapreduce", "data-processing", "distributed-computing"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: Apache Software License",
     "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.7",
-    "Programming Language :: Python :: 3.8",
-    "Programming Language :: Python :: 3.9",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
 ]
-requires-python = ">=3.7"
+requires-python = ">=3.11"
 dependencies = [
-    # Add your dependencies here
-    # "numpy>=1.20.0",
-    # "pandas>=1.3.0",
-    # "coffea>=0.7.0",
+    "awkward>=2.8.1",
+    "coffea>=2025.3.0",
+    "fsspec>=2025.3.0",
+    "fsspec-xrootd>=0.5.1",
+    "ndcctools>=7.15.8",
+    "numpy>=2.1.3",
+    "rich>=13.9.4",
+    "uproot>=5.6.0",
+    "xrootd>=5.8.1",
 ]
 
 [project.optional-dependencies]
@@ -47,10 +50,10 @@ dev = [
 dynamic_data_reduction = "dynamic_data_reduction.main:main"
 
 [project.urls]
-Homepage = "https://github.com/yourusername/dynamic_data_reduction"
-Repository = "https://github.com/yourusername/dynamic_data_reduction.git"
-Documentation = "https://github.com/yourusername/dynamic_data_reduction#readme"
-"Bug Tracker" = "https://github.com/yourusername/dynamic_data_reduction/issues"
+Homepage = "https://github.com/btovar/dynamic_data_reduction"
+Repository = "https://github.com/btovar/dynamic_data_reduction.git"
+Documentation = "https://github.com/btovar/dynamic_data_reduction#readme"
+"Bug Tracker" = "https://github.com/btovar/dynamic_data_reduction/issues"
 
 [tool.setuptools_scm]
 write_to = "src/dynamic_data_reduction/_version.py"
