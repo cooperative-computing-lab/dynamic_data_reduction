@@ -103,14 +103,19 @@ def _initialize_result_data(data):
 
 
 def _update_progress_description(
-    progress, main_task, submitted_count, pending_count, completed_count
+    progress, main_task, submitted_files_count, pending_files_count, completed_files_count, batch_task=None, submitted_batches_count=0, pending_batches_count=0, completed_batches=0, total_batches=0
 ):
     """Update progress bar with current status."""
     if progress:
         progress.update(
             main_task,
-            description=f"Counting events ({completed_count} completed, {submitted_count} running, {pending_count} pending)",
+            description=f"Preprocessing files: {completed_files_count} completed, {submitted_files_count} running, {pending_files_count} pending",
         )
+        if batch_task is not None:
+            progress.update(
+                batch_task,
+                description=f"Preprocessing batches: {completed_batches} completed, {submitted_batches_count} running, {pending_batches_count} pending",
+            )
 
 
 def _process_file_with_timeout(file_path, tree_name, timeout):
@@ -187,11 +192,11 @@ def preprocess(
     if not files_to_process:
         return result_data
 
-    # Set up progress bar
+    # Set up progress bars
     progress = None
     if show_progress:
         progress = Progress(
-            TextColumn("[bold blue]Preprocessing files"),
+            TextColumn("[bold blue]{task.description}"),
             BarColumn(),
             MofNCompleteColumn(),
             TextColumn("•"),
@@ -200,14 +205,19 @@ def preprocess(
             transient=False,
         )
         progress.start()
-        main_task = progress.add_task("Counting events", total=len(files_to_process))
+        main_task = progress.add_task("Preprocessing files", total=len(files_to_process))
+        
+        # Calculate total number of batches
+        total_batches = (len(files_to_process) + batch_size - 1) // batch_size
+        batch_task = progress.add_task("Preprocessing batches", total=total_batches)
 
     # Initialize task tracking
     submitted_tasks = {}  # task_id -> list of (dataset_name, file_path, retry_count)
     files_to_process_queue = (
         files_to_process.copy()
     )  # Files that still need to be processed
-    completed_count = 0
+    completed_files_count = 0
+    completed_batches = 0
     failed_files = []  # Files that failed after all retries
 
     # Initialize results with None
@@ -223,9 +233,6 @@ def preprocess(
         ):  # Limit concurrent tasks
             batch_to_submit = files_to_process_queue[:batch_size]
             files_to_process_queue = files_to_process_queue[batch_size:]
-
-            if show_progress:
-                print(f"Submitting batch of {len(batch_to_submit)} files...")
 
             # Create task to count events for the entire batch
             file_paths = [fp for _, fp, _ in batch_to_submit]
@@ -243,7 +250,12 @@ def preprocess(
                     main_task,
                     len(submitted_tasks),
                     len(files_to_process_queue),
-                    completed_count,
+                    completed_files_count,
+                    batch_task,
+                    len(submitted_tasks),
+                    len(files_to_process_queue),
+                    completed_batches,
+                    total_batches,
                 )
 
         # Wait for a task to complete
@@ -267,7 +279,7 @@ def preprocess(
                         result_data[dataset_name]["files"][file_path][
                             "num_entries"
                         ] = num_entries
-                        completed_count += 1
+                        completed_files_count += 1
                         # Only advance progress for successful completions
                         if progress:
                             progress.update(main_task, advance=1)
@@ -296,6 +308,11 @@ def preprocess(
 
         # Remove from submitted tasks
         del submitted_tasks[task_id]
+        
+        # Advance batch progress bar
+        completed_batches += 1
+        if show_progress:
+            progress.update(batch_task, advance=1)
 
         # Update progress bar with current status
         if show_progress:
@@ -304,7 +321,10 @@ def preprocess(
                 main_task,
                 len(submitted_tasks),
                 len(files_to_process_queue),
-                completed_count,
+                completed_files_count,
+                batch_task,
+                completed_batches,
+                total_batches,
             )
 
     # Finalize progress bar
@@ -313,50 +333,18 @@ def preprocess(
 
     # Print summary
     total_files = len(files_to_process)
-    successful_files = completed_count
+    successful_files = completed_files_count
     failed_count = len(failed_files)
 
     print(f"\nPreprocessing complete:")
     print(f"  Total files: {total_files}")
     print(f"  Successful: {successful_files}")
     print(f"  Failed: {failed_count}")
+    print(f"  Batches processed: {completed_batches} / {total_batches}")
 
     if failed_count > 0:
         print(f"  Failed files:")
         for dataset_name, file_path in failed_files:
             print(f"    {dataset_name}: {file_path}")
-
-    return result_data
-
-
-def preprocess_simple(
-    data: Dict[str, Any], tree_name: str = "Events", timeout: int = 60
-) -> Dict[str, Any]:
-    """
-    Simple preprocessing function that counts events synchronously.
-    Useful for small datasets or testing.
-
-    Args:
-        data: Input data structure with datasets and files
-        tree_name: Name of the tree to count events in (default: "Events")
-        timeout: Timeout in seconds for each file operation (default: 60)
-
-    Returns:
-        Preprocessed data structure with num_entries added to each file
-    """
-    result_data = _initialize_result_data(data)
-
-    for dataset_name, dataset_info in data.items():
-        files = _normalize_files_format(dataset_info.get("files", {}))
-
-        for file_path, file_info in files.items():
-            result_data[dataset_name]["files"][file_path] = file_info.copy()
-
-            # Check if num_entries already exists
-            if "num_entries" not in file_info or file_info["num_entries"] is None:
-                num_entries = _process_file_with_timeout(file_path, tree_name, timeout)
-                result_data[dataset_name]["files"][file_path][
-                    "num_entries"
-                ] = num_entries
 
     return result_data
