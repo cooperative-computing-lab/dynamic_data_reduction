@@ -240,6 +240,8 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         new_data = {}
         total_events = 0
 
+        print(data)
+
         for ds_index, (ds_name, ds_specs) in enumerate(data.items()):
             if max_datasets and ds_index >= max_datasets:
                 break
@@ -292,15 +294,17 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
     def _normalize_processors(self, processors):
         """
         Normalize each processor in self.processors.
-        If proc has a callable 'processor' attribute, use proc.processor. 
+        If proc has a callable 'processor' attribute, use proc.processor.
         If proc is already callable, use it directly.
         """
+
         def get_callable_processor(proc):
             # If the object has a 'processor' attribute and it is callable, use it
             # Always wrap the proc for virtual array materialization
             def wrap(proc_callable):
                 def wrapped(events, **processor_args):
                     return call_processor(proc_callable, events, **processor_args)
+
                 return wrapped
 
             if hasattr(proc, "process") and callable(getattr(proc, "process")):
@@ -308,8 +312,10 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             elif callable(proc):
                 return wrap(proc)
             else:
-                raise ValueError("Processor must be callable or have a callable 'process' attribute.")
-        
+                raise ValueError(
+                    "Processor must be callable or have a callable 'process' attribute."
+                )
+
         if isinstance(processors, dict):
             normalized = {}
             for name, proc in processors.items():
@@ -330,4 +336,5 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             return accumulator
         elif isinstance(accumulator, str):
             from .accumulators import import_accumulator
+
             return import_accumulator(accumulator)

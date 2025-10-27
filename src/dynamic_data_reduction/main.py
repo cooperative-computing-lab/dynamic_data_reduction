@@ -1036,18 +1036,24 @@ class DynamicDataReduction:
         """Print resource information for a completed task if verbose is enabled."""
         if not self.verbose or not task.completed():
             return
-        
+
         try:
             # Get resource information
             requested = task.resources_allocated
             measured = task.resources_measured
-            
+
             print(f"Task {task.description()} resources:")
-            print(f"  Allocated: cores={requested.cores}, memory={requested.memory} MB, disk={requested.disk} MB")
-            print(f"  Measured:  cores={measured.cores}, memory={measured.memory} MB, disk={measured.disk} MB, wall_time={measured.wall_time:.2f} s")
+            print(
+                f"  Allocated: cores={requested.cores}, memory={requested.memory} MB, disk={requested.disk} MB"
+            )
+            print(
+                f"  Measured:  cores={measured.cores}, memory={measured.memory} MB, disk={measured.disk} MB, wall_time={measured.wall_time:.2f} s"
+            )
         except Exception as e:
             # If resource monitoring is not enabled, resources_measured might not be available
-            print(f"Task {task.description()} resources: (monitoring not available - {e})")
+            print(
+                f"Task {task.description()} resources: (monitoring not available - {e})"
+            )
 
     def _set_resources(self):
         for ds in self.data["datasets"]:
@@ -1204,10 +1210,10 @@ class DynamicDataReduction:
         ds = task.dataset
 
         p.add_completed(task)
-        
+
         # Print resource information if verbose is enabled
         self._print_task_resources(task)
-        
+
         if task.successful():
             task.output_size = task.output
             if task.is_checkpoint():

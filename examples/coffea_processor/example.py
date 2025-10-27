@@ -2,7 +2,9 @@ import pytest
 
 
 @pytest.mark.skipif(
-    not pytest.importorskip("dynamic_data_reduction", reason="TaskVine ddr not available"),
+    not pytest.importorskip(
+        "dynamic_data_reduction", reason="TaskVine ddr not available"
+    ),
     reason="TaskVine not available",
 )
 def test_taskvine_with_ddr():
@@ -12,6 +14,7 @@ def test_taskvine_with_ddr():
     from coffea.nanoevents import schemas
     from coffea.processor.test_items import NanoEventsProcessor
     import dynamic_data_reduction as ddr
+    from dynamic_data_reduction import preprocess
     import ndcctools.taskvine as vine
 
     port = 9123
@@ -42,37 +45,47 @@ def test_taskvine_with_ddr():
     # print(filelist)
 
     filelist = {
-        'ZJets': {
-            'files': {
-                osp.abspath('samples/nano_dy.root'): {
-                    'object_path': 'Events',
-                    'steps': [[0, 40]],
-                    'num_entries': 40,
-                    'uuid': 'a9490124-3648-11ea-89e9-f5b55c90beef'
+        "ZJets": {
+            "files": {
+                osp.abspath("samples/nano_dy.root"): {
+                    "object_path": "Events",
+                    "steps": [[0, 40]],
+                    "num_entries": 40,
+                    "uuid": "a9490124-3648-11ea-89e9-f5b55c90beef",
                 },
             },
-            'metadata': {
-                'checkusermeta': True, 'someusermeta': 'hello'
-            },
+            "metadata": {"checkusermeta": True, "someusermeta": "hello"},
         },
-        'Data': {
-            'files': {
-                osp.abspath('samples/nano_dimuon.root'): {
-                    'object_path': 'Events',
-                    'steps': [[0, 40]],
-                    'num_entries': 40,
-                    'uuid': 'a210a3f8-3648-11ea-a29f-f5b55c90beef'
+        "Data": {
+            "files": {
+                osp.abspath("samples/nano_dimuon.root"): {
+                    "object_path": "Events",
+                    "steps": [[0, 40]],
+                    "num_entries": 40,
+                    "uuid": "a210a3f8-3648-11ea-a29f-f5b55c90beef",
                 }
             },
-            'metadata': {
-                'checkusermeta': True, 'someusermeta2': 'world'
-            },
+            "metadata": {"checkusermeta": True, "someusermeta2": "world"},
         },
     }
 
     mgr = vine.Manager(port=9123)
-    run = ddr.CoffeaDynamicDataReduction(
+
+    # Example: Use the preprocessing function to count events
+    # (This is optional - you can also use the preprocessed filelist directly)
+    print("Preprocessing data with TaskVine...")
+    preprocessed_filelist = preprocess(
+        manager=mgr,
         data=filelist,
+        tree_name="Events",
+        timeout=60,
+        max_retries=3,
+        show_progress=True,
+        batch_size=5,
+    )
+
+    run = ddr.CoffeaDynamicDataReduction(
+        data=preprocessed_filelist,  # Use preprocessed data
         manager=mgr,
         processors={"proc": NanoEventsProcessor(mode="virtual")},
         accumulator=NanoEventsProcessor,
@@ -118,5 +131,5 @@ def test_taskvine_with_ddr():
         )
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     test_taskvine_with_ddr()
