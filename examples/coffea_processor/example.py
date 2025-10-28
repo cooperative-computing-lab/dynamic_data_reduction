@@ -1,4 +1,4 @@
-import json
+import os.path as osp
 
 
 def taskvine_with_ddr():
@@ -10,26 +10,31 @@ def taskvine_with_ddr():
 
     port = 9123
 
-    with open("data.json") as f:
-        filelist = json.load(f)
-
     mgr = vine.Manager(port=9123)
 
-    # Example: Use the preprocessing function to count events
-    # (This is optional - you can also use the preprocessed filelist directly)
-    print("Preprocessing data with TaskVine...")
-    preprocessed_filelist = preprocess(
-        manager=mgr,
-        data=filelist,
-        tree_name="Events",
-        timeout=60,
-        max_retries=3,
-        show_progress=True,
-        batch_size=5,
-    )
+    filelist = {
+        "ZJets": {
+            "files": {
+                osp.abspath("samples/nano_dy.root"): {
+                    "object_path": "Events",
+                    "metadata": {"checkusermeta": True, "someusermeta": "hello"},
+                    "num_entries": 40
+                },
+            },
+        },
+        "Data": {
+            "files": {
+                osp.abspath("samples/nano_dimuon.root"): {
+                    "object_path": "Events",
+                    "metadata": {"checkusermeta": True, "someusermeta2": "world"},
+                    "num_entries": 40
+                }
+            },
+        },
+    }
 
     run = ddr.CoffeaDynamicDataReduction(
-        data=preprocessed_filelist,  # Use preprocessed data
+        data=filelist,  # Use preprocessed data
         manager=mgr,
         processors={"proc": NanoEventsProcessor(mode="virtual")},
         accumulator=NanoEventsProcessor,
