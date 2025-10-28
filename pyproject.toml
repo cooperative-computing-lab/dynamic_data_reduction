@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=45", "wheel", "setuptools_scm[toml]>=6.2"]
+requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "dynamic_data_reduction"
-dynamic = ["version"]
+version = "0.1.1"
 description = "Dynamic MapReduce framework for data processing"
 readme = "README.md"
 license = "Apache-2.0"
@@ -56,8 +56,6 @@ Repository = "https://github.com/btovar/dynamic_data_reduction.git"
 Documentation = "https://github.com/btovar/dynamic_data_reduction#readme"
 "Bug Tracker" = "https://github.com/btovar/dynamic_data_reduction/issues"
 
-[tool.setuptools_scm]
-write_to = "src/dynamic_data_reduction/_version.py"
 
 [tool.setuptools.packages.find]
 where = ["src"]
