@@ -10,6 +10,22 @@ This project requires Python 3.13+ and uses conda for dependency management. We 
 
 ### Setting up the Conda Environment
 
+The project includes an `environment.yml` file with the following dependencies:
+
+```yaml
+name: ddr
+channels:
+  - conda-forge
+dependencies:
+  - coffea=>2025.3.0
+  - fsspec-xrootd=>0.5.1
+  - ndcctools>=7.15.8
+  - python=>3.12
+  - rich=>13.9.4
+  - uproot=>5.6.0
+  - xrootd=>5.8.1
+```
+
 1. **Create the conda environment from the provided environment.yml file:**
    ```bash
    conda env create -f environment.yml
