@@ -44,7 +44,7 @@ dependencies:
 
 ### Installing from Source
 
-### From PyPI (when published)
+### From PyPI
 ```bash
 pip install dynamic_data_reduction
 ```
@@ -53,7 +53,7 @@ Once you have the conda environment set up:
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/dynamic_data_reduction.git
+git clone https://github.com/cooperative-computing-lab/dynamic_data_reduction.git
 cd dynamic_data_reduction
 
 # Activate the conda environment (if not already active)
@@ -65,9 +65,9 @@ pip install -e .
 
 ## Usage
 
-- General use example: [examples/simple/simple-example.py](examples/simple/simple-example.py)
-- Using Coffea Processors Classes Directly: [examples/coffea_processor/example_with_preprocess.py](examples/coffea_processor/example_with_preprocess.py)
-- Coffea use in analysis: [examples/cortado/ddr_cortado.py](examples/cortado/ddr_cortado.py)
+- General use example: [examples/simple/simple-example.py](https://github.com/cooperative-computing-lab/dynamic_data_reduction/blob/main/examples/simple/simple-example.py)
+- Using Coffea Processors Classes Directly: [examples/coffea_processor/example_with_preprocess.py](https://github.com/cooperative-computing-lab/dynamic_data_reduction/blob/main/examples/coffea_processor/example_with_preprocess.py)
+- Coffea use in analysis: [examples/cortado/ddr_cortado.py](https://github.com/cooperative-computing-lab/dynamic_data_reduction/blob/main/examples/cortado/ddr_cortado.py)
 
 
 ## License
