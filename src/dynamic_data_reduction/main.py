@@ -727,7 +727,11 @@ class DynMapRedProcessingTask(DynMapRedTask):
         )
 
         for k, v in self.manager.resources_processing.items():
-            getattr(task, f"set_{k}")(v)
+            # Handle wall_time specially - it uses set_time_max() instead of set_wall_time()
+            if k == "wall_time":
+                task.set_time_max(v)
+            else:
+                getattr(task, f"set_{k}")(v)
 
         return task
 
@@ -801,7 +805,11 @@ class DynMapRedAccumTask(DynMapRedTask):
         task.set_category(f"accumulating#{self.processor.name}#{self.dataset.name}")
 
         for k, v in self.manager.resources_accumualting.items():
-            getattr(task, f"set_{k}")(v)
+            # Handle wall_time specially - it uses set_time_max() instead of set_wall_time()
+            if k == "wall_time":
+                task.set_time_max(v)
+            else:
+                getattr(task, f"set_{k}")(v)
 
         return task
 

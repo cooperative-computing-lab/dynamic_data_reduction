@@ -50,6 +50,16 @@ if __name__ == "__main__":
         processors={"double": processor_double_data, "triple": processor_triple_data},
         accumulator=reducer_add_data,
         accumulation_size=10,
+        resource_monitor="watchdog",
+        resources_processing={
+            "cores": 1,
+            "memory": 1000,  # MB
+            "wall_time": 300,  # 5 minutes max per task
+        },
+        resources_accumualting={
+            "cores": 1,
+            "memory": 500,  # MB
+        },
     )
 
     workers = vine.Factory("local", manager=mgr)
