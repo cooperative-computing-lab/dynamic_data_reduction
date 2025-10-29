@@ -24,6 +24,7 @@ dependencies:
   - rich=>13.9.4
   - uproot=>5.6.0
   - xrootd=>5.8.1
+  - setuptools<81
 ```
 
 1. **Create the conda environment from the provided environment.yml file:**
