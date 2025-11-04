@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dynamic_data_reduction"
-version = "2025.10.1"
+version = "2025.11.1"
 description = "Dynamic MapReduce framework for data processing"
 readme = "README.md"
 license = "Apache-2.0"
