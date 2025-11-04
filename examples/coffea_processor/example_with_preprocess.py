@@ -64,6 +64,7 @@ def main():
 
         with open("preprocessed.json", "w") as f:
             import json
+
             json.dump(preprocessed_data, f, indent=2)
 
         print("\nPreprocessed data spec:")

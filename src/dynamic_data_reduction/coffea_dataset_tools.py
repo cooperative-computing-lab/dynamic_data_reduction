@@ -103,14 +103,32 @@ def _initialize_result_data(data):
 
 
 def _update_progress_description(
-    progress, main_task, submitted_files_count, completed_files_count, total_files_count, batch_task=None, submitted_batches_count=0, completed_batches=0, total_batches=0
+    progress,
+    main_task,
+    submitted_files_count,
+    completed_files_count,
+    total_files_count,
+    batch_task=None,
+    submitted_batches_count=0,
+    completed_batches=0,
+    total_batches=0,
 ):
     """Update progress bar with current status."""
     if not progress:
         return
 
-    progress.update(main_task, description=f"Preprocessing files: {completed_files_count} completed, {submitted_files_count} submitted", total=total_files_count, completed=completed_files_count)
-    progress.update(batch_task, description=f"Preprocessing batches: {completed_batches} completed, {submitted_batches_count} submitted", total=total_batches, completed=completed_batches)
+    progress.update(
+        main_task,
+        description=f"Preprocessing files: {completed_files_count} completed, {submitted_files_count} submitted",
+        total=total_files_count,
+        completed=completed_files_count,
+    )
+    progress.update(
+        batch_task,
+        description=f"Preprocessing batches: {completed_batches} completed, {submitted_batches_count} submitted",
+        total=total_batches,
+        completed=completed_batches,
+    )
 
 
 def _process_file_with_timeout(file_path, tree_name, timeout):
@@ -202,8 +220,10 @@ def preprocess(
             transient=False,
         )
         progress.start()
-        main_task = progress.add_task("Preprocessing files", total=len(files_to_process))
-        
+        main_task = progress.add_task(
+            "Preprocessing files", total=len(files_to_process)
+        )
+
         # Calculate total number of batches
         total_batches = (len(files_to_process) + batch_size - 1) // batch_size
         batch_task = progress.add_task("Preprocessing batches", total=total_batches)
@@ -216,7 +236,7 @@ def preprocess(
     completed_files_count = 0
     completed_batches = 0
     failed_files = []  # Files that failed after all retries
-    
+
     # Main processing loop
     while files_to_process_queue or submitted_tasks:
         # Submit batch of files (including retries)
@@ -289,7 +309,9 @@ def preprocess(
                     print(
                         f"Retrying {file_path} (attempt {retry_count + 2}/{max_retries})"
                     )
-                files_to_process_queue.append((dataset_name, file_path, retry_count + 1))
+                files_to_process_queue.append(
+                    (dataset_name, file_path, retry_count + 1)
+                )
             else:
                 failed_files.append((dataset_name, file_path))
                 # Only advance progress for permanent failures
@@ -298,7 +320,7 @@ def preprocess(
 
         # Remove from submitted tasks
         del submitted_tasks[task_id]
-        
+
         # Advance batch progress bar
         completed_batches += 1
         if show_progress:
