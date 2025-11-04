@@ -181,8 +181,10 @@ def preprocess(
                 # Already has num_entries, copy it
                 result_data[dataset_name]["files"][file_path] = file_info.copy()
             else:
-                # Need to count events
-                files_to_process.append((dataset_name, file_path, file_info))
+                # Need to count events - initialize in result_data and add to process queue
+                result_data[dataset_name]["files"][file_path] = file_info.copy()
+                result_data[dataset_name]["files"][file_path]["num_entries"] = None
+                files_to_process.append((dataset_name, file_path, 0))
 
     if not files_to_process:
         return result_data
@@ -214,12 +216,7 @@ def preprocess(
     completed_files_count = 0
     completed_batches = 0
     failed_files = []  # Files that failed after all retries
-
-    # Initialize results with None
-    for dataset_name, file_path, file_info in files_to_process:
-        result_data[dataset_name]["files"][file_path] = file_info.copy()
-        result_data[dataset_name]["files"][file_path]["num_entries"] = None
-
+    
     # Main processing loop
     while files_to_process_queue or submitted_tasks:
         # Submit batch of files (including retries)
@@ -267,7 +264,7 @@ def preprocess(
             # Task completed successfully
             try:
                 results = task.output  # This should be a list of results, one per file
-                for i, (dataset_name, file_path, file_info) in enumerate(batch_files):
+                for i, (dataset_name, file_path, retry_count) in enumerate(batch_files):
                     if results[i] is not None:
                         num_entries = results[i]
                         result_data[dataset_name]["files"][file_path][
@@ -286,14 +283,13 @@ def preprocess(
             to_resubmit = batch_files
 
         # retry all files in to_resubmit
-        for dataset_name, file_path, rettry_count in to_resubmit:
-            retry_count += 1
-            if retry_count < max_retries:
+        for dataset_name, file_path, retry_count in to_resubmit:
+            if retry_count <= max_retries:
                 if show_progress:
                     print(
-                        f"Retrying {file_path} (attempt {retry_count + 1}/{max_retries})"
+                        f"Retrying {file_path} (attempt {retry_count + 2}/{max_retries})"
                     )
-                files_to_process_queue.append((dataset_name, file_path, retry_count))
+                files_to_process_queue.append((dataset_name, file_path, retry_count + 1))
             else:
                 failed_files.append((dataset_name, file_path))
                 # Only advance progress for permanent failures
