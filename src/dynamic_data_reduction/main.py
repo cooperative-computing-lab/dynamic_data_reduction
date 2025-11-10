@@ -1024,13 +1024,14 @@ class DynamicDataReduction:
             # Get resource information
             requested = task.resources_allocated
             measured = task.resources_measured
+            wall_time = task.get_metric("time_workers_execute_last") / 1e6 # convert microseconds to seconds
 
             print(f"Task {task.description()} resources:")
             print(
                 f"  Allocated: cores={requested.cores}, memory={requested.memory} MB, disk={requested.disk} MB"
             )
             print(
-                f"  Measured:  cores={measured.cores}, memory={measured.memory} MB, disk={measured.disk} MB, wall_time={measured.wall_time:.2f} s"
+                f"  Measured:  cores={measured.cores}, memory={measured.memory} MB, disk={measured.disk} MB, wall_time={wall_time:.3f} s"
             )
         except Exception as e:
             # If resource monitoring is not enabled, resources_measured might not be available
