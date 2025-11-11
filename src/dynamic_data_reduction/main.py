@@ -1329,10 +1329,14 @@ class ProgressBar:
     @staticmethod
     def make_progress_bar():
         return rich.progress.Progress(
-            rich.progress.TextColumn("{task.description}"),
-            rich.progress.BarColumn(),
+            rich.progress.TextColumn("[bold blue]{task.description}", justify="left"),
+            rich.progress.BarColumn(bar_width=None),
             rich.progress.MofNCompleteColumn(),
+            "[",
+            rich.progress.TimeElapsedColumn(),
+            "<",
             rich.progress.TimeRemainingColumn(),
+            "]",
             transient=False,
             auto_refresh=True,
         )
