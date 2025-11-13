@@ -6,6 +6,7 @@ import sys
 import math
 import re
 import os
+import time
 from pathlib import Path
 
 import uuid
@@ -574,7 +575,7 @@ class ProcCounts:
 
     def add_active(self, task):
         """
-        Register a task as active (submitted to the scheduler) and update progress bars.
+        Register a task as active (submitted to the scheduler)
 
         Args:
             task: The task that is now active.
@@ -583,7 +584,7 @@ class ProcCounts:
 
     def add_completed(self, task):
         """
-        Register a task as completed (completed by the scheduler) and update progress bars.
+        Register a task as completed (completed by the scheduler)
 
         Args:
             task: The task that has completed.
@@ -617,6 +618,7 @@ class ProcCounts:
             total=self.items_total,
             completed=self.items_done + self.items_failed,
             description=f"items ({self.name}): {self.items_active} active, {self.items_failed} failed",
+            refresh=True,
         )
         self.workflow.progress_bars.update(
             self,
@@ -624,6 +626,7 @@ class ProcCounts:
             total=self.proc_tasks_total,
             completed=self.proc_tasks_done,
             description=f"procs ({self.name}): {self.proc_tasks_active} active, {self.proc_tasks_failed} failed",
+            refresh=True,
         )
         self.workflow.progress_bars.update(
             self,
@@ -631,6 +634,7 @@ class ProcCounts:
             total=self.accum_tasks_total,
             completed=self.accum_tasks_done,
             description=f"accums ({self.name}): {self.accum_tasks_active} active",
+            refresh=True,
         )
         self.workflow.progress_bars.refresh()
 
@@ -1374,6 +1378,7 @@ class DynamicDataReduction:
 
         self._id_to_task = {}
         self.datasets_failed = set()
+        self._last_progress_refresh_time = 0.0
 
         if isinstance(self.processors, list):
             nps = (len(self.processors) + 1) * priority_separation
@@ -1853,7 +1858,13 @@ class DynamicDataReduction:
     def refresh_progress_bars(self):
         """
         Refresh all progress bars for all processors with current statistics.
+        Updates are throttled to at most once per second.
         """
+        current_time = time.time()
+        if current_time - self._last_progress_refresh_time < 1.0:
+            return
+        self._last_progress_refresh_time = current_time
+        
         for p in self.processors.values():
             p.refresh_progress_bars()
 
