@@ -10,6 +10,7 @@ from rich.progress import (
     BarColumn,
     TextColumn,
     TimeRemainingColumn,
+    TimeElapsedColumn,
     MofNCompleteColumn,
 )
 
@@ -211,13 +212,16 @@ def preprocess(
     progress = None
     if show_progress:
         progress = Progress(
-            TextColumn("[bold blue]{task.description}"),
-            BarColumn(),
+            TextColumn("[bold blue]{task.description}", justify="left"),
+            BarColumn(bar_width=None),
             MofNCompleteColumn(),
-            TextColumn("•"),
+            "[",
+            TimeElapsedColumn(),
+            "<",
             TimeRemainingColumn(),
-            console=None,
+            "]",
             transient=False,
+            auto_refresh=True,
         )
         progress.start()
         main_task = progress.add_task(
