@@ -171,6 +171,7 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             Callable[[str, str, str, bool, int, ResultT], Any]
         ] = None,
         environment: Optional[str] = None,
+        environment_variables: Optional[Mapping[str, str]] = None,
         extra_files: Optional[list[str]] = None,
         file_replication: int = 3,
         max_task_retries: int = 10,
@@ -198,6 +199,14 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
         # Wrap processors to handle virtual array materialization
         wrapped_processors = self._normalize_processors(processors)
 
+        # Store x509_proxy for later use
+        self.x509_proxy = x509_proxy
+
+        # Initialize environment_variables with X509_USER_PROXY if x509_proxy is provided
+        self.environment_variables = {}
+        if x509_proxy:
+            self.environment_variables["X509_USER_PROXY"] = "proxy.pem"
+
         super().__init__(
             manager=manager,
             processors=wrapped_processors,
@@ -211,6 +220,7 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             checkpoint_distance=checkpoint_distance,
             checkpoint_time=checkpoint_time,
             environment=environment,
+            environment_variables=environment_variables,
             extra_files=extra_files,
             file_replication=file_replication,
             max_task_retries=max_task_retries,
@@ -222,7 +232,6 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             results_directory=results_directory,
             result_postprocess=result_postprocess,
             graph_output_file=graph_output_file,
-            x509_proxy=x509_proxy,
             remote_executor_args=remote_executor_args,
             source_postprocess=make_source_postprocess(schema, uproot_options),
             source_preprocess=make_source_preprocess(step_size, object_path),
@@ -230,6 +239,12 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
             resource_monitor=resource_monitor,
             verbose=verbose,
         )
+
+        # Add x509_proxy file to extra_files_map if provided
+        if self.x509_proxy:
+            self._extra_files_map["proxy.pem"] = self.manager.declare_file(
+                self.x509_proxy, cache=True
+            )
 
     def from_coffea_preprocess(
         self, data, max_datasets=None, max_files_per_dataset=None, skip_datasets=None
@@ -239,8 +254,6 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
 
         new_data = {}
         total_events = 0
-
-        print(data)
 
         for ds_index, (ds_name, ds_specs) in enumerate(data.items()):
             if max_datasets and ds_index >= max_datasets:
@@ -286,8 +299,6 @@ class CoffeaDynamicDataReduction(DynamicDataReduction):
                     "size": dataset_events,
                 }
                 total_events += dataset_events
-
-        print({"datasets": new_data, "size": total_events})
 
         return {"datasets": new_data, "size": total_events}
 

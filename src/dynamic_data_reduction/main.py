@@ -31,7 +31,23 @@ ResultT = TypeVar("ResultT")
 priority_separation = 1_000_000
 
 
-def checkpoint_standard(distance, time, size, custom_fn, len_fn, task):
+def checkpoint_standard(task, distance=None, time=None, size=None, custom_fn=None, len_fn=None):
+    """
+    Determine whether a task should be checkpointed based on various criteria.
+
+    Args:
+        task: The task to evaluate for checkpointing.
+        distance: Optional maximum distance in graph edges to the closest ancestor checkpoint task.
+                  If task.checkpoint_distance > distance, checkpoint is triggered.
+        time: Optional maximum cumulative execution time threshold.
+              If task.cumulative_exec_time > time, checkpoint is triggered.
+        size: Optional maximum size threshold. If len_fn(task) > size, checkpoint is triggered.
+        custom_fn: Optional custom function that takes a task and returns True if checkpointing is triggered.
+        len_fn: Optional function to compute the size of a task (used with size parameter).
+
+    Returns:
+        bool: True if the task should be checkpointed based on any of the criteria, False otherwise.
+    """
     if distance is not None and task.checkpoint_distance > distance:
         return True
 
@@ -49,18 +65,57 @@ def checkpoint_standard(distance, time, size, custom_fn, len_fn, task):
 
 # Define a custom ProcessPoolExecutor that uses cloudpickle
 class CloudpickleProcessPoolExecutor(concurrent.futures.ProcessPoolExecutor):
+    """
+    A ProcessPoolExecutor that uses cloudpickle for serialization.
+
+    This executor extends ProcessPoolExecutor to support pickling functions and closures
+    that standard pickle cannot handle, using cloudpickle for serialization.
+    """
     @staticmethod
     def _cloudpickle_process_worker(serialized_data):
+        """
+        Worker function that deserializes and executes a function with its arguments.
+
+        Args:
+            serialized_data: Cloudpickle-serialized tuple of (function, args, kwargs).
+
+        Returns:
+            The result of executing the function with the provided arguments.
+        """
         import cloudpickle
 
         fn, args, kwargs = cloudpickle.loads(serialized_data)
         return fn(*args, **kwargs)
 
     def __init__(self, *args, **kwargs):
+        """
+        Initialize the CloudpickleProcessPoolExecutor.
+
+        Sets up a fork-based multiprocessing context and passes all arguments
+        to the parent ProcessPoolExecutor.
+
+        Args:
+            *args: Positional arguments passed to ProcessPoolExecutor.
+            **kwargs: Keyword arguments passed to ProcessPoolExecutor.
+        """
         self._mp_context = mp.get_context("fork")
         super().__init__(*args, **kwargs, mp_context=self._mp_context)
 
     def submit(self, fn, *args, **kwargs):
+        """
+        Submit a function to be executed in a separate process.
+
+        The function and its arguments are serialized using cloudpickle before submission,
+        allowing functions that standard pickle cannot handle (e.g., closures, lambdas) to be executed in a separate process.
+
+        Args:
+            fn: The function to execute.
+            *args: Positional arguments for the function.
+            **kwargs: Keyword arguments for the function.
+
+        Returns:
+            A Future object representing the execution of the function.
+        """
         # Cloudpickle the function and arguments
         fn_dumps = cloudpickle.dumps((fn, args, kwargs))
         # Submit the wrapper with the serialized data
@@ -77,6 +132,28 @@ def wrap_processing(
     source_postprocess_args,
     remote_executor_args,
 ):
+    """
+    Wrap the processor function for execution in a remote worker.
+
+    This function handles the complete processor function execution:
+    1. Post-processes the source datum using the source_postprocess function
+    2. Processes the datum through the processor function
+    3. Computes Dask objects if needed using the specified scheduler
+    4. Serializes the result to a file using cloudpickle
+
+    Args:
+        processor: Function that processes the datum and returns a result to be serialized using cloudpickle.
+        source_postprocess: Function to post-process the source datum before processing.
+        datum: The data item to process.
+        processor_args: Dictionary of keyword arguments for the processor function.
+        source_postprocess_args: Dictionary of keyword arguments for source_postprocess.
+        remote_executor_args: Dictionary containing 'num_workers' and 'scheduler' configuration.
+                             'scheduler' can be 'threads', 'cloudpickle_processes', or None.
+                             'num_workers' defaults to CORES environment variable or 1.
+
+    Returns:
+        int: The length of the result if it has a length, otherwise 1.
+    """
     import os
     import warnings
 
@@ -161,6 +238,26 @@ def accumulate(
     dataset_name,
     force,
 ):
+    """
+    Accumulate results from multiple result files into a single result.
+
+    Loads results from multiple files, accumulates them using the accumulator function,
+    optionally writes the result using write_fn, and saves the final result.
+
+    Args:
+        accumulator: Function that combines two results: accumulator(result1, result2) -> combined_result.
+        result_names: List of file paths containing results to accumulate (sorted before processing).
+        write_fn: Optional function to write intermediate results.
+                 Signature: write_fn(result, results_dir, processor_name, dataset_name, size, force) -> bool.
+                 Returns True if accumulation should continue using the partial result, of False to start from an empty result.
+        results_dir: Directory path for storing results.
+        processor_name: Name of the processor being used.
+        dataset_name: Name of the dataset being processed.
+        force: Boolean indicating whether to force writing (passed to write_fn).
+
+    Returns:
+        int: The size of the last accumulated result (length if available, otherwise number of result files).
+    """
     out = None
     for r in sorted(result_names):
         with lz4.frame.open(r, "rb") as fp:
@@ -206,6 +303,24 @@ def accumulate_tree(
     from_files=True,
     local_executor_args=None,
 ):
+    """
+    Accumulate results using a tree reduction pattern.
+
+    Reduces results pairwise or in groups based on accumulator_n_args.
+
+    Args:
+        accumulator: Function that combines multiple results: accumulator(*results) -> combined_result.
+        results: List of results to accumulate. If from_files=True, these are file paths;
+                 otherwise, they are the actual result objects.
+        accumulator_n_args: Number of arguments the accumulator function takes (default: 2).
+        from_files: If True, results are file paths that need to be loaded;
+                   if False, results are already loaded objects.
+        local_executor_args: Dictionary with 'scheduler' and 'num_workers' for Dask execution.
+                            Defaults to {'scheduler': 'threads', 'num_workers': CORES env var or 1}.
+
+    Returns:
+        int: The length of the accumulated result if available, otherwise the number of input results.
+    """
     import dask
     import os
 
@@ -254,26 +369,74 @@ def accumulate_tree(
 
 
 def identity_source_conector(datum, **extra_args):
+    """
+    Identity function for source post-processing.
+
+    Returns the datum unchanged. Used as a default source_postprocess function.
+
+    Args:
+        datum: The data item to process.
+        **extra_args: Additional keyword arguments (ignored).
+
+    Returns:
+        The datum unchanged.
+    """
     return datum
 
 
 def identity_source_preprocess(dataset_info, **extra_args):
+    """
+    Identity function for source preprocessing.
+
+    Yields each item from dataset_info with a size of 1.
+    Used as a default source_preprocess function.
+
+    Args:
+        dataset_info: Iterable of data items to preprocess.
+        **extra_args: Additional keyword arguments (ignored).
+
+    Yields:
+        Tuple of (datum, size) for each item in dataset_info, where size is always 1.
+    """
     for datum in dataset_info:
         yield (datum, 1)
 
 
 def default_accumualtor(a, b, **extra_args):
+    """
+    Default accumulator function that adds two results together.
+
+    Used as a default accumulator function for combining results.
+    Assumes results support the + operator.
+
+    Args:
+        a: First result to accumulate.
+        b: Second result to accumulate.
+        **extra_args: Additional keyword arguments (ignored).
+
+    Returns:
+        The result of a + b.
+    """
     return a + b
 
 
 @dataclasses.dataclass
 class ProcCounts:
+    """
+    Tracks progress and statistics for a processor across multiple datasets.
+
+    Maintains counts of items, processing tasks, and accumulation tasks
+    for each dataset associated with a processor.
+    """
     workflow: object  # really a DynamicDataReduction, but typing in python is a pain
     name: str
     fn: Callable[[ProcT], ResultT]
     priority: int = 0
 
     def __post_init__(self):
+        """
+        Initialize ProcCounts by creating DatasetCounts for each dataset in the workflow.
+        """
         self._datasets = {}
 
         for ds_name, ds_specs in self.workflow.data["datasets"].items():
@@ -296,6 +459,10 @@ class ProcCounts:
         return sum(ds.items_submitted for ds in self._datasets.values())
 
     @property
+    def items_active(self):
+        return self.items_submitted - self.items_done - self.items_failed
+
+    @property
     def items_total(self):
         return sum(ds.items_total for ds in self._datasets.values())
 
@@ -306,6 +473,14 @@ class ProcCounts:
     @property
     def proc_tasks_failed(self):
         return sum(ds.proc_tasks_failed for ds in self._datasets.values())
+
+    @property
+    def proc_tasks_active(self):
+        return self.proc_tasks_submitted - self.proc_tasks_done - self.proc_tasks_failed
+
+    @property
+    def accum_tasks_active(self):
+        return self.accum_tasks_submitted - self.accum_tasks_done
 
     @property
     def proc_tasks_submitted(self):
@@ -362,6 +537,13 @@ class ProcCounts:
         return id(self)
 
     def add_dataset(self, dataset_name, dataset_specs):
+        """
+        Add a dataset to this processor and create a DatasetCounts instance for it.
+
+        Args:
+            dataset_name: Name of the dataset to add.
+            dataset_specs: Dataset specifications used to determine the total item count.
+        """
         args = self.workflow.source_preprocess_args
         if args is None:
             args = {}
@@ -379,80 +561,97 @@ class ProcCounts:
         )
 
     def dataset(self, name):
+        """
+        Get the DatasetCounts instance for a dataset by name.
+
+        Args:
+            name: Name of the dataset.
+
+        Returns:
+            DatasetCounts: The DatasetCounts instance for the specified dataset.
+        """
         return self._datasets[name]
 
     def add_active(self, task):
+        """
+        Register a task as active (submitted to the scheduler) and update progress bars.
+
+        Args:
+            task: The task that is now active.
+        """
         self.dataset(task.dataset.name).add_active(task)
 
-        self.workflow.progress_bars.update(
-            self,
-            "procs",
-            total=self.proc_tasks_total,
-            completed=self.proc_tasks_done,
-            description=f"procs ({self.name}): {self.proc_tasks_done} done, {self.proc_tasks_failed} failed",
-        )
-        self.workflow.progress_bars.update(
-            self,
-            "accums",
-            total=self.accum_tasks_total,
-        )
-
     def add_completed(self, task):
+        """
+        Register a task as completed (completed by the scheduler) and update progress bars.
+
+        Args:
+            task: The task that has completed.
+        """
         self.dataset(task.dataset.name).add_completed(task)
         if not task.successful():
             return
 
-        self.workflow.progress_bars.update(
-            self,
-            "accums",
-            completed=self.accum_tasks_done,
-        )
-        if isinstance(task, DynMapRedProcessingTask):
-            self.workflow.progress_bars.update(
-                self,
-                "procs",
-                completed=self.proc_tasks_done,
-                description=f"procs ({self.name}): {self.proc_tasks_done} done, {self.proc_tasks_failed} failed",
-            )
-            # Update items progress bar to include both successful and failed items
-            self.workflow.progress_bars.update(
-                self,
-                "items",
-                completed=self.items_done + self.items_failed,
-                description=f"items ({self.name}): {self.items_done} done, {self.items_failed} failed",
-            )
+    def initialize_progress_bars(self, progress_bars):
+        """
+        Initialize progress bars for this processor.
+
+        Adds progress bar tasks for datasets, items, processing tasks,
+        and accumulation tasks.
+
+        Args:
+            progress_bars: The ProgressBar instance to add tasks to.
+        """
+        progress_bars.add_task(self, "datasets", total=len(self.workflow.data["datasets"]))
+        progress_bars.add_task(self, "items", total=self.items_total)
+        progress_bars.add_task(self, "procs", total=self.proc_tasks_total)
+        progress_bars.add_task(self, "accums", total=self.accum_tasks_total)
 
     def refresh_progress_bars(self):
+        """
+        Refresh all progress bars for this processor with current statistics.
+        """
         self.workflow.progress_bars.update(
             self,
             "items",
             total=self.items_total,
             completed=self.items_done + self.items_failed,
-            description=f"items ({self.name}): {self.items_done} done, {self.items_failed} failed",
+            description=f"items ({self.name}): {self.items_active} active, {self.items_failed} failed",
         )
         self.workflow.progress_bars.update(
             self,
             "procs",
             total=self.proc_tasks_total,
             completed=self.proc_tasks_done,
-            description=f"procs ({self.name}): {self.proc_tasks_done} done, {self.proc_tasks_failed} failed",
+            description=f"procs ({self.name}): {self.proc_tasks_active} active, {self.proc_tasks_failed} failed",
         )
         self.workflow.progress_bars.update(
             self,
             "accums",
             total=self.accum_tasks_total,
+            completed=self.accum_tasks_done,
+            description=f"accums ({self.name}): {self.accum_tasks_active} active",
         )
         self.workflow.progress_bars.refresh()
 
 
 @dataclasses.dataclass
 class DatasetCounts:
+    """
+    Tracks progress and statistics for a single dataset within a processor.
+
+    Maintains counts of items, processing tasks, and accumulation tasks,
+    and manages the state of pending accumulation tasks.
+    """
     processor: ProcCounts
     name: str
     priority: int
     items_total: int
 
     def __post_init__(self):
+        """
+        Initialize DatasetCounts with empty state and zero counters.
+        """
         self.pending_accumulation = []
         self.output_file = None
         self.result = None
@@ -473,6 +672,12 @@ class DatasetCounts:
         return (self.items_done + self.items_failed) == self.items_total
 
     def add_completed(self, task):
+        """
+        Register a task as completed and update counters.
+
+        Args:
+            task: The task that has completed.
+        """
         self.active.remove(task.id)
 
         if not task.successful():
@@ -490,6 +695,12 @@ class DatasetCounts:
             self.accum_tasks_done += 1
 
     def add_active(self, task):
+        """
+        Register a task as active and update counters.
+
+        Args:
+            task: The task that is now active.
+        """
         if isinstance(task, DynMapRedProcessingTask):
             self.proc_tasks_submitted += 1
         elif isinstance(task, DynMapRedAccumTask):
@@ -498,6 +709,15 @@ class DatasetCounts:
         self.active.add(task.id)
 
     def set_result(self, task):
+        """
+        Set the final result for this dataset and stop progress bars.
+
+        Loads the result from the task's output file, optionally applies result_postprocess,
+        and marks the dataset as complete.
+
+        Args:
+            task: The task containing the final result, or None if there are no results.
+        """
         print(f"{self.processor.name}#{self.name} completed!")
         r = None
         if task:
@@ -520,6 +740,16 @@ class DatasetCounts:
             self.processor.workflow.progress_bars.stop_task(self.processor, bar_type)
 
     def ready_for_result(self):
+        """
+        Check if the dataset is ready to produce a final result. This is determined by the following criteria:
+
+        1. All data in the dataset have been processed (done or failed permanently)
+        2. No active processing or accumulation tasks
+        3. No pending accumulation
+
+        Returns:
+            bool: True if the dataset is ready to produce a final result, False otherwise.
+        """
         return (
             self.all_proc_done
             and len(self.active) == 0
@@ -530,6 +760,21 @@ class DatasetCounts:
 
 @dataclasses.dataclass
 class DynMapRedTask(abc.ABC):
+    """
+    Abstract base class for dynamic map-reduce tasks.
+
+    Represents a task in the dynamic data reduction workflow, managing
+    checkpointing, priority, and execution state.
+
+    datum: The data to process as the result of source_preprocess.
+    input_tasks: List of input tasks that this task depends on, or None for processing tasks.
+    checkpoint: Whether the result of this tasks is known to be checkpointed.
+    final: Whether this task is the final task in the dataset.
+    attempt_number: The number of times this task has been retried.
+    priority_constant: The constant part of the priority for this task.
+    input_size: The size of the input data for this task.
+    output_size: The size of the output data for this task.
+    """
     manager: vine.Manager
     processor: ProcCounts
     dataset: DatasetCounts
@@ -546,6 +791,10 @@ class DynMapRedTask(abc.ABC):
     output_size: Optional[int] = None
 
     def __post_init__(self) -> None:
+        """
+        Initialize the task by computing checkpoint distance, creating the vine task for the scheduler,
+        and setting priority based on checkpoint status.
+        """
         self._result_file = None
         self._vine_task = None
 
@@ -582,29 +831,79 @@ class DynMapRedTask(abc.ABC):
         if self.manager.environment:
             self.vine_task.add_environment(self.manager.environment)
 
+        # Set environment variables if provided
+        if self.processor.workflow.environment_variables:
+            for env_var, value in self.processor.workflow.environment_variables.items():
+                self.vine_task.set_env_var(env_var, value)
+
         self.vine_task.set_category(self.description())
         self.vine_task.add_output(self.result_file, "task_output.p")
 
     def __getattr__(self, attr):
+        """
+        Redirect unknown attribute access to the underlying vine task.
+
+        Args:
+            attr: Attribute name to look up.
+
+        Returns:
+            The attribute value from the vine task, or AttributeError if not found.
+        """
         # redirect any unknown method to inner vine task
         return getattr(self._vine_task, attr, AttributeError)
 
     def is_checkpoint(self):
+        """
+        Check if this task is a checkpoint task. This is determined by the following criteria:
+
+            1. The task is marked as final
+            2. The task is marked as checkpoint
+
+        Returns:
+            bool: True if the task is marked as final or checkpoint, False otherwise.
+        """
         return self.final or self.checkpoint
 
     def is_final(self):
+        """
+        Check if this task is a final task.
+
+        Returns:
+            bool: True if the task is marked as final, False otherwise.
+        """
         return self.final
 
     @abc.abstractmethod
     def description(self):
+        """
+        Return a human-readable description of this task.
+
+        Returns:
+            str: A description string identifying the task type and associated processor/dataset.
+        """
         pass
 
     @property
     def vine_task(self):
+        """
+        Get the underlying vine.Task object.
+
+        Returns:
+            vine.Task: The TaskVine task associated with this DynMapRedTask.
+        """
         return self._vine_task
 
     @property
     def result_file(self):
+        """
+        Return (if needed declare) the result vine file object for this task.
+
+        For checkpoint tasks, creates a file in the staging or results directory.
+        For non-checkpoint tasks, creates a temporary file.
+
+        Returns:
+            vine.File: The vine file object that represents the result of this task.
+        """
         if not self._result_file:
             if self.is_checkpoint():
                 if self.is_final():
@@ -622,6 +921,13 @@ class DynMapRedTask(abc.ABC):
 
     @property
     def exec_time(self):
+        """
+        Get the execution time for this task.
+
+        Returns:
+            float or None: The wall time execution time in seconds if the task has completed,
+                          None otherwise.
+        """
         if not self.vine_task or not self.completed():
             return None
         else:
@@ -629,10 +935,25 @@ class DynMapRedTask(abc.ABC):
 
     @property
     def cumulative_inputs_time(self):
+        """
+        Get the cumulative execution time of all non-checkpointed input tasks for this task.
+
+        Returns:
+            float: The sum of execution times from all non-checkpoint input tasks.
+        """
         return self._cumulative_inputs_time
 
     @property
     def cumulative_exec_time(self):
+        """
+        Get the cumulative execution time including this task and all its inputs.
+
+        For checkpointed tasks, returns 0. Otherwise, sums the cumulative execution time
+        of all input tasks recursively plus this task's execution time.
+
+        Returns:
+            float: The cumulative execution time in seconds, or 0 for checkpointed tasks.
+        """
         if self.is_checkpoint():
             return 0
 
@@ -653,25 +974,65 @@ class DynMapRedTask(abc.ABC):
         input_tasks: list | None,
         result_file: vine.File,
     ) -> vine.Task:
+        """
+        Create the underlying vine.Task for this DynMapRedTask.
+
+        Args:
+            datum: The data item to process as the result of source_preprocess.
+            input_tasks: List of input tasks that this task depends on, or None.
+            result_file: The file where the result should be stored.
+
+        Returns:
+            vine.Task: The configured TaskVine task ready for submission.
+        """
         pass
 
     @abc.abstractmethod
     def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
+        """
+        Generate arguments for resubmitting this task when it fails due to resource exhaustion.
+
+        Returns:
+            list[dict] or None: List of dictionaries containing arguments for creating new attempts,
+                              or None if the task should not be resubmitted with modified arguments.
+                              Each dict can contain 'datum' and/or 'input_tasks' keys to be used for creating new attempts.
+        """
         return None
 
     def cleanup(self):
+        """
+        Clean up intermediate result files if appropriate.
+
+        Intermediate results are only cleaned up if they are not checkpoints
+        and have a non-zero output size (indicating they are still needed).
+        """
         # intermediate results can only be cleaned-up from a task with results at the manager
         if not self.is_checkpoint() and self.output_size > 0:
             return
         self._cleanup_actual()
 
     def _cleanup_actual(self):
+        """
+        Recursively clean up all input task files and undeclare them from the manager.
+
+        This is an internal method that performs the actual cleanup work.
+        """
         while self.input_tasks:
             t = self.input_tasks.pop()
             t._cleanup_actual()
             self.manager.undeclare_file(t.result_file)
 
     def _clone_next_attempt(self, datum=None, input_tasks=None):
+        """
+        Create a clone of this task for the next retry attempt.
+
+        Args:
+            datum: Optional new datum to use (defaults to current datum).
+            input_tasks: Optional new input tasks to use (defaults to current input_tasks).
+
+        Returns:
+            DynMapRedTask: A new task instance with incremented attempt_number.
+        """
         return type(self)(
             self.manager,
             self.processor,
@@ -685,6 +1046,18 @@ class DynMapRedTask(abc.ABC):
         )
 
     def create_new_attempts(self):
+        """
+        Create new task attempts for retry after failure.
+
+        If the task failed due to resource exhaustion, calls resubmit_args_on_exhaustion
+        to potentially split the task. Otherwise, creates a single retry attempt.
+
+        Returns:
+            list[DynMapRedTask]: List of new task attempts to submit.
+
+        Raises:
+            RuntimeError: If the maximum number of retries has been reached.
+        """
         if self.attempt_number >= self.manager.max_task_retries:
             print(self.description())
             print(self.std_output)
@@ -709,12 +1082,29 @@ class DynMapRedTask(abc.ABC):
 
 
 class DynMapRedProcessingTask(DynMapRedTask):
+    """
+    Task that processes a single datum through the processor function.
+
+    Creates a PythonTask that wraps the processing pipeline, including
+    source post-processing, processor execution, and result serialization.
+    """
     def create_task(
         self: Self,
         datum: Hashable,
         input_tasks: list[Self] | None,
         result_file: vine.File,
     ) -> vine.Task:
+        """
+        Create a vine.PythonTask that executes the processing pipeline.
+
+        Args:
+            datum: The data item to process as the result of source_preprocess.
+            input_tasks: Not used for processing tasks (should be None).
+            result_file: The vine file object that represents the result of this task.
+
+        Returns:
+            vine.Task: A configured PythonTask ready for submission to the scheduler.
+        """
         # task = vine.FunctionCall(self._lib_name, 'wrap_processing', self._processor, datum)
         task = vine.PythonTask(
             wrap_processing,
@@ -736,14 +1126,36 @@ class DynMapRedProcessingTask(DynMapRedTask):
         return task
 
     def description(self):
+        """
+        Return a human readable description string for this processing task.
+
+        Returns:
+            str: Description in the format "processing#{processor_name}#{dataset_name}".
+        """
         return f"processing#{self.processor.name}#{self.dataset.name}"
 
     def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
+        """
+        Processing tasks do not currently support resubmission with modified arguments.
+        Eventually they will be split into smaller tasks.
+
+        Returns:
+            None: Processing tasks always return None (no special resubmission logic).
+        """
         return None
 
 
 class DynMapRedFetchTask(DynMapRedTask):
+    """
+    Task that creates a checkpoint by copying a result file.
+
+    Fetch tasks are always checkpoints and create a hard link to the target task's
+    result file, effectively creating a checkpoint without remote recomputation at the scheduler.
+    """
     def __post_init__(self):
+        """
+        Initialize fetch task as a checkpoint with high priority.
+        """
         self.checkpoint = True
         self.priority_constant = 2
         super().__post_init__()
@@ -754,7 +1166,20 @@ class DynMapRedFetchTask(DynMapRedTask):
         input_tasks,
         result_file: vine.File,
     ) -> vine.Task:
+        """
+        Create a vine.Task that creates a hard link to the target task's result.
 
+        Args:
+            datum: Not used for fetch tasks.
+            input_tasks: Must contain exactly one task whose result will be fetched.
+            result_file: The file where the link will be created.
+
+        Returns:
+            vine.Task: A shell task that creates a hard link.
+
+        Raises:
+            AssertionError: If input_tasks is None or does not contain exactly one task.
+        """
         assert input_tasks is not None and len(input_tasks) == 1
         target = input_tasks[0]
 
@@ -768,15 +1193,36 @@ class DynMapRedFetchTask(DynMapRedTask):
         return task
 
     def description(self):
+        """
+        Return a human readable description string for this fetch task.
+
+        Returns:
+            str: Description in the format "fetching#{processor_name}#{dataset_name}".
+        """
         return f"fetching#{self.processor.name}#{self.dataset.name}"
 
     def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
+        """
+        Fetch tasks resubmit with the same arguments.
+
+        Returns:
+            list[dict]: A list containing an empty dict to resubmit with identical arguments.
+        """
         # resubmit with the same args
         return [{}]
 
 
 class DynMapRedAccumTask(DynMapRedTask):
+    """
+    Task that accumulates multiple results into a single result.
+
+    Accumulation tasks combine results from multiple input tasks using the
+    accumulator function, optionally writing intermediate checkpoints.
+    """
     def __post_init__(self):
+        """
+        Initialize accumulation task with high priority and compute input size.
+        """
         self.priority_constant = 2
         self.input_size = sum(t.output_size for t in self.input_tasks)
         super().__post_init__()
@@ -787,7 +1233,17 @@ class DynMapRedAccumTask(DynMapRedTask):
         input_tasks,
         result_file: vine.File,
     ) -> vine.Task:
+        """
+        Create a vine.PythonTask that accumulates results from input tasks using the accumulator function.
 
+        Args:
+            datum: Not used for accumulation tasks.
+            input_tasks: List of tasks whose results will be accumulated.
+            result_file: The file where the accumulated result will be stored.
+
+        Returns:
+            vine.Task: A configured PythonTask that executes the accumulate function.
+        """
         task = vine.PythonTask(
             accumulate,
             self.manager.accumulator,
@@ -814,6 +1270,16 @@ class DynMapRedAccumTask(DynMapRedTask):
         return task
 
     def resubmit_args_on_exhaustion(self: Self) -> list[dict[Any, Any]] | None:
+        """
+        Split accumulation task into smaller tasks when resource exhaustion occurs.
+
+        If the task has enough inputs and accumulation_size >= 2, splits the inputs
+        into two groups and returns arguments for creating two new accumulation tasks.
+
+        Returns:
+            list[dict] or None: List of dictionaries with 'input_tasks' keys for splitting,
+                              or None if the task cannot be split.
+        """
         n = len(self.input_tasks)
         if n < 4 or self.manager.accumulation_size < 2:
             return None
@@ -834,11 +1300,24 @@ class DynMapRedAccumTask(DynMapRedTask):
         return ts
 
     def description(self):
+        """
+        Return a human readable description string for this accumulation task.
+
+        Returns:
+            str: Description in the format "accumulating#{processor_name}#{dataset_name}".
+        """
         return f"accumulating#{self.processor.name}#{self.dataset.name}"
+
 
 
 @dataclasses.dataclass
 class DynamicDataReduction:
+    """
+    Main class for executing dynamic reduce workflows with checkpointing.
+
+    Manages the complete lifecycle of processing data through multiple processors
+    and datasets, handling task submission, accumulation, checkpointing, and result collection.
+    """
     manager: vine.Manager
     processors: (
         Callable[[ProcT], ResultT]
@@ -855,6 +1334,7 @@ class DynamicDataReduction:
     checkpoint_time: Optional[int] = None
     checkpoint_custom_fn: Optional[Callable[[DynMapRedTask], bool]] = None
     environment: Optional[str] = None
+    environment_variables: Optional[Mapping[str, str]] = None
     extra_files: Optional[list[str]] = None
     file_replication: int = 1
     max_task_retries: int = 5
@@ -873,13 +1353,18 @@ class DynamicDataReduction:
     source_postprocess_args: Optional[Mapping[str, Any]] = None
     source_preprocess: Callable[[Any], DataT] = identity_source_preprocess
     source_preprocess_args: Optional[Mapping[str, Any]] = None
-    x509_proxy: Optional[str] = None
     graph_output_file: bool = True
     skip_datasets: Optional[List[str]] = None
     resource_monitor: str | bool | None = "measure"
     verbose: bool = True
 
     def __post_init__(self):
+        """
+        Initialize the DynamicDataReduction workflow.
+
+        Sets up processors, configures the TaskVine manager, creates libraries,
+        and prepares the environment for task execution.
+        """
         def name(p):
             try:
                 n = p.__name__
@@ -926,6 +1411,9 @@ class DynamicDataReduction:
         if not self.remote_executor_args:
             self.remote_executor_args = {}
 
+        if self.environment_variables is None:
+            self.environment_variables = {}
+
         results_dir = Path(self.results_directory).absolute()
         results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -940,11 +1428,6 @@ class DynamicDataReduction:
         self._extra_files_map = {
             "dynmapred.py": self.manager.declare_file(__file__, cache=True)
         }
-
-        if self.x509_proxy:
-            self._extra_files_map["proxy.pem"] = self.manager.declare_file(
-                self.x509_proxy, cache=True
-            )
 
         if self.extra_files:
             for path in self.extra_files:
@@ -965,10 +1448,28 @@ class DynamicDataReduction:
         self._set_env()
 
     def __getattr__(self, attr):
+        """
+        Redirect unknown attribute access to the underlying TaskVine manager.
+
+        Args:
+            attr: Attribute name to look up.
+
+        Returns:
+            The attribute value from the manager.
+        """
         # redirect any unknown method to inner manager
         return getattr(self.manager, attr)
 
     def _set_env(self, env="env.tar.gz"):
+        """
+        Set up the execution environment and create a library from required functions.
+
+        Creates a TaskVine library containing wrap_processing, accumulate, and accumulate_tree
+        functions, and associates it with a Poncho environment file.
+
+        Args:
+            env: Path to the Poncho environment file (default: "env.tar.gz").
+        """
         functions = [wrap_processing, accumulate, accumulate_tree]
         # if self.lib_extra_functions:
         #     functions.extend(self.lib_extra_functions)
@@ -1016,7 +1517,12 @@ class DynamicDataReduction:
             )
 
     def _print_task_resources(self, task):
-        """Print resource information for a completed task if verbose is enabled."""
+        """
+        Print resource information for a completed task if verbose is enabled.
+
+        Args:
+            task: The task whose resource information should be printed.
+        """
         if not self.verbose or not task.completed():
             return
 
@@ -1040,6 +1546,12 @@ class DynamicDataReduction:
             )
 
     def _set_resources(self):
+        """
+        Configure resource limits for processing and accumulation task categories.
+
+        Sets the maximum resources (cores, memory, etc.) that can be used
+        by processing and accumulation tasks for each dataset.
+        """
         for ds in self.data["datasets"]:
             self.manager.set_category_mode(f"processing#{ds}", "max")
             self.manager.set_category_mode(f"accumulating#{ds}", "max")
@@ -1052,6 +1564,13 @@ class DynamicDataReduction:
             )
 
     def add_fetch_task(self, target, final):
+        """
+        Create and submit a fetch task to checkpoint a target task's result.
+
+        Args:
+            target: The DynMapRedTask whose result should be fetched.
+            final: Whether this is a final fetch task (True) or intermediate checkpoint (False).
+        """
         t = DynMapRedFetchTask(
             self,
             target.processor,
@@ -1063,6 +1582,17 @@ class DynamicDataReduction:
         self.submit(t)
 
     def add_accum_task(self, dataset, task):
+        """
+        Create and submit an accumulation task when enough results are pending.
+
+        Adds the task to pending accumulation if it has a non-zero output size.
+        When enough tasks are pending (2 * accumulation_size), creates an accumulation
+        task. If all processing is done and few tasks remain, creates a final accumulation.
+
+        Args:
+            dataset: The DatasetCounts instance managing the dataset.
+            task: The completed task to add to accumulation, or None to trigger final accumulation.
+        """
         ds = dataset
         if task and task.output_size > 0:
             ds.pending_accumulation.append(task)
@@ -1102,21 +1632,54 @@ class DynamicDataReduction:
 
     @property
     def all_proc_done(self):
+        """
+        Check if all processing tasks are complete across all processors.
+
+        Returns:
+            bool: True if all processors have completed all their processing tasks.
+        """
         return all(p.all_proc_done for p in reversed(self.processors.values()))
 
     def should_checkpoint(self, task):
+        """
+        Determine if a task should be checkpointed based on:
+        1. The task is marked as checkpoint
+        2. The task is marked as final
+        3. The distance in graph edges to the closest ancestor checkpoint task is greater than the specified distance
+        4. The cumulative execution time that would be lost if the task is not checkpointed is greater than the specified time
+        5. The size or custom size function applied to the task (i.e., size of computation) is greater than the specified size
+        6. The custom checkpointing function privided returns True
+
+        Args:
+            task: The task to evaluate for checkpointing.
+
+        Returns:
+            bool: True if the task should be checkpointed, False otherwise.
+        """
         if task.checkpoint or task.final:
             return True
         return checkpoint_standard(
+            task,
             self.checkpoint_distance,
             self.checkpoint_time,
             self.checkpoint_size,
             self.checkpoint_custom_fn,
             self.result_length,
-            task,
         )
 
     def resubmit(self, task):
+        """
+        Resubmit a failed task with new attempts.
+
+        Creates new task attempts based on the failure reason and submits them.
+        For resource exhaustion failures, may split the task if supported.
+
+        Args:
+            task: The failed task to resubmit.
+
+        Returns:
+            bool: True if new attempts were created and submitted, False otherwise.
+        """
         print(f"resubmitting task {task.description()} {task.datum}\n{task.std_output}")
 
         self.manager.undeclare_file(task.result_file)
@@ -1130,7 +1693,16 @@ class DynamicDataReduction:
 
         return True
 
-    def wait(self, timeout):
+    def wait(self, timeout=None):
+        """
+        Wait for some active task to complete and return it.
+
+        Args:
+            timeout: Not used (kept for API compatibility).
+
+        Returns:
+            DynMapRedTask or None: The completed task, or None if no task completed.
+        """
         tv = self.manager.wait(self._wait_timeout)
         if tv:
             t = self._id_to_task.pop(tv.id)
@@ -1142,13 +1714,21 @@ class DynamicDataReduction:
         return None
 
     def submit(self, task):
+        """
+        Submit a task to the TaskVine manager for execution.
+
+        Adds required extra files, sets retry count, and tracks the task in the internal mapping.
+
+        Args:
+            task: The DynMapRedTask to submit.
+
+        Returns:
+            int: The TaskVine task ID.
+        """
         for path, f in self._extra_files_map.items():
             task.add_input(f, path)
 
         task.set_retries(self.max_task_retries)
-
-        if self.x509_proxy:
-            task.set_env_var("X509_USER_PROXY", "proxy.pem")
 
         tid = self.manager.submit(task.vine_task)
         self._id_to_task[tid] = task
@@ -1157,6 +1737,12 @@ class DynamicDataReduction:
         return tid
 
     def write_graph_file(self, t):
+        """
+        Write task information to the graph CSV file, if enabled.
+
+        Args:
+            t: The task whose information should be written.
+        """
         if not self._graph_file:
             return
 
@@ -1167,6 +1753,18 @@ class DynamicDataReduction:
         )
 
     def generate_processing_args(self, datasets):
+        """
+        Generate processing arguments for all processors and datasets.
+
+        Iterates through all processors and datasets, applying the source_preprocess function to each dataset
+        to generate (processor, dataset, datum, size) tuples for processing task creation.
+
+        Args:
+            datasets: Dictionary mapping dataset names to their specifications to be used for source_preprocess.
+
+        Yields:
+            tuple: (processor, dataset, datum, size) tuples for each item to be processed.
+        """
         args = self.source_preprocess_args
         if args is None:
             args = {}
@@ -1181,6 +1779,14 @@ class DynamicDataReduction:
                     yield (p, ds, datum, pre_size)
 
     def need_to_submit(self):
+        """
+        Calculate how many new tasks can be submitted.
+
+        Considers limits on active tasks, batch submission size, and manager capacity.
+
+        Returns:
+            int: The number of tasks that can be submitted (0 or more).
+        """
         max_active = self.max_tasks_active if self.max_tasks_active else sys.maxsize
         max_batch = (
             self.max_tasks_submit_batch if self.max_tasks_submit_batch else sys.maxsize
@@ -1190,6 +1796,16 @@ class DynamicDataReduction:
         return max(0, min(max_active, max_batch, hungry))
 
     def add_completed(self, task):
+        """
+        Handle a completed task: update progress, create follow-up tasks, or handle failures.
+
+        For successful tasks: creates accumulation tasks, fetch tasks for checkpoints,
+        or final result tasks as appropriate. For failed tasks: attempts resubmission
+        or marks the dataset as failed.
+
+        Args:
+            task: The completed task to process.
+        """
         p = task.processor
         ds = task.dataset
 
@@ -1235,16 +1851,35 @@ class DynamicDataReduction:
                     task.cleanup()
 
     def refresh_progress_bars(self):
+        """
+        Refresh all progress bars for all processors with current statistics.
+        """
         for p in self.processors.values():
             p.refresh_progress_bars()
 
-    def compute(self):
+    def _initialize_progress_bars(self):
+        """
+        Initialize progress bars for all processors.
+
+        Creates a ProgressBar instance and adds tasks for datasets, items,
+        processing tasks, and accumulation tasks for each processor.
+        """
         self.progress_bars = ProgressBar()
         for p in self.processors.values():
-            self.progress_bars.add_task(p, "datasets", total=len(self.data["datasets"]))
-            self.progress_bars.add_task(p, "items", total=p.items_total)
-            self.progress_bars.add_task(p, "procs", total=p.proc_tasks_total)
-            self.progress_bars.add_task(p, "accums", total=p.accum_tasks_total)
+            p.initialize_progress_bars(self.progress_bars)
+
+    def compute(self):
+        """
+        Execute the complete dynamic data reduction workflow.
+
+        Initializes progress bars, submits and manages tasks, collects results,
+        and prints summaries of failed items and datasets.
+
+        Returns:
+            dict: Nested dictionary mapping processor names to dataset names to results.
+                  Format: {processor_name: {dataset_name: result}}
+        """
+        self._initialize_progress_bars()
 
         result = self._compute_internal()
         self.refresh_progress_bars()
@@ -1283,6 +1918,15 @@ class DynamicDataReduction:
         return result
 
     def _compute_internal(self):
+        """
+        Internal method that executes the main computation loop.
+
+        Submits processing tasks, waits for completion, handles completed tasks,
+        and collects final results when all work is done.
+
+        Returns:
+            dict: Nested dictionary mapping processor names to dataset names to results.
+        """
         self._set_resources()
         item_generator = self.generate_processing_args(self.data["datasets"])
 
@@ -1307,6 +1951,8 @@ class DynamicDataReduction:
             if task:
                 self.add_completed(task)
 
+            self.refresh_progress_bars()
+
             if self.all_proc_done and self.manager.empty():
                 break
 
@@ -1326,8 +1972,20 @@ class DynamicDataReduction:
 
 
 class ProgressBar:
+    """
+    Wrapper around rich.progress.Progress for tracking workflow progress.
+
+    Manages multiple progress bars per processor, tracking datasets, items,
+    processing tasks, and accumulation tasks.
+    """
     @staticmethod
     def make_progress_bar():
+        """
+        Create a rich.progress.Progress instance with standard columns.
+
+        Returns:
+            rich.progress.Progress: A configured progress bar instance.
+        """
         return rich.progress.Progress(
             rich.progress.TextColumn("[bold blue]{task.description}", justify="left"),
             rich.progress.BarColumn(bar_width=None),
@@ -1342,33 +2000,116 @@ class ProgressBar:
         )
 
     def __init__(self, enabled=True):
+        """
+        Initialize the ProgressBar wrapper.
+
+        Args:
+            enabled: Whether to start the progress display immediately.
+        """
         self._prog = self.make_progress_bar()
         self._ids = {}
         if enabled:
             self._prog.start()
 
     def bar_name(self, p, bar_type):
+        """
+        Generate a name for a progress bar.
+
+        Args:
+            p: The processor (ProcCounts) this bar belongs to.
+            bar_type: Type of progress bar (e.g., "items", "procs", "accums").
+
+        Returns:
+            str: Formatted bar name.
+        """
         return f"{bar_type} ({p.name})"
 
     def add_task(self, p, bar_type, *args, **kwargs):
+        """
+        Add a new progress bar task for a processor and bar type.
+
+        Args:
+            p: The processor (ProcCounts) this bar belongs to.
+            bar_type: Type of progress bar (e.g., "items", "procs", "accums").
+            *args: Positional arguments passed to rich.progress.Progress.add_task.
+            **kwargs: Keyword arguments passed to rich.progress.Progress.add_task.
+
+        Returns:
+            int: The task ID from rich.progress.
+        """
         b = self._prog.add_task(self.bar_name(p, bar_type), *args, **kwargs)
         self._ids.setdefault(p, {})[bar_type] = b
         self._prog.start_task(self._ids[p][bar_type])
         return b
 
     def stop_task(self, p, bar_type, *args, **kwargs):
+        """
+        Stop a progress bar task.
+
+        Args:
+            p: The processor (ProcCounts) this bar belongs to.
+            bar_type: Type of progress bar to stop.
+            *args: Positional arguments passed to rich.progress.Progress.stop_task.
+            **kwargs: Keyword arguments passed to rich.progress.Progress.stop_task.
+
+        Returns:
+            Result from rich.progress.Progress.stop_task.
+        """
         return self._prog.stop_task(self._ids[p][bar_type], *args, **kwargs)
 
     def update(self, p, bar_type, *args, **kwargs):
+        """
+        Update a progress bar task.
+
+        Args:
+            p: The processor (ProcCounts) this bar belongs to.
+            bar_type: Type of progress bar to update.
+            *args: Positional arguments passed to rich.progress.Progress.update.
+            **kwargs: Keyword arguments passed to rich.progress.Progress.update.
+
+        Returns:
+            Result from rich.progress.Progress.update.
+        """
         return self._prog.update(self._ids[p][bar_type], *args, **kwargs)
 
     def advance(self, p, bar_type, *args, **kwargs):
+        """
+        Advance a progress bar task by a specified amount.
+
+        Args:
+            p: The processor (ProcCounts) this bar belongs to.
+            bar_type: Type of progress bar to advance.
+            *args: Positional arguments passed to rich.progress.Progress.advance.
+            **kwargs: Keyword arguments passed to rich.progress.Progress.advance.
+
+        Returns:
+            Result from rich.progress.Progress.advance.
+        """
         result = self._prog.advance(self._ids[p][bar_type], *args, **kwargs)
         return result
 
     def refresh(self, *args, **kwargs):
+        """
+        Refresh the progress display.
+
+        Args:
+            *args: Positional arguments passed to rich.progress.Progress.refresh.
+            **kwargs: Keyword arguments passed to rich.progress.Progress.refresh.
+
+        Returns:
+            Result from rich.progress.Progress.refresh.
+        """
         return self._prog.refresh(*args, **kwargs)
 
     # redirect anything else to rich_bar
     def __getattr__(self, name):
+        """
+        Redirect unknown attribute access to the underlying rich.progress.Progress instance.
+
+        Args:
+            name: Attribute name to look up.
+
+        Returns:
+            The attribute value from the progress instance.
+        """
         return getattr(self._prog, name)
