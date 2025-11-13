@@ -278,7 +278,7 @@ def preprocess(
         if task.id not in submitted_tasks:
             continue
 
-        batch_files = submitted_tasks[task_id]
+        batch_files = submitted_tasks[task.id]
         to_resubmit = []
         if task.successful():
             # Task completed successfully
@@ -319,7 +319,7 @@ def preprocess(
                     progress.update(main_task, advance=1)
 
         # Remove from submitted tasks
-        del submitted_tasks[task_id]
+        del submitted_tasks[task.id]
 
         # Advance batch progress bar
         completed_batches += 1
