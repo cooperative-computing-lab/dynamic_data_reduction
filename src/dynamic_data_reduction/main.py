@@ -2088,9 +2088,9 @@ class ProgressBar:
         Returns:
             Result from rich.progress.Progress.stop_task.
         """
-        self._prog.refresh(self._ids[p][bar_type])
+        self._prog.refresh()
         self._prog.stop_task(self._ids[p][bar_type], *args, **kwargs)
-        self._prog.refresh(self._ids[p][bar_type])
+        self._prog.refresh()
 
     def update(self, p, bar_type, *args, **kwargs):
         """
