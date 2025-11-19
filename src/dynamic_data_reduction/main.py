@@ -33,7 +33,9 @@ ResultT = TypeVar("ResultT")
 priority_separation = 1_000_000
 
 
-def checkpoint_standard(task, distance=None, time=None, size=None, custom_fn=None, len_fn=None):
+def checkpoint_standard(
+    task, distance=None, time=None, size=None, custom_fn=None, len_fn=None
+):
     """
     Determine whether a task should be checkpointed based on various criteria.
 
@@ -73,6 +75,7 @@ class CloudpickleProcessPoolExecutor(concurrent.futures.ProcessPoolExecutor):
     This executor extends ProcessPoolExecutor to support pickling functions and closures
     that standard pickle cannot handle, using cloudpickle for serialization.
     """
+
     @staticmethod
     def _cloudpickle_process_worker(serialized_data):
         """
@@ -181,7 +184,7 @@ def wrap_processing(
 
     # Check if the result is a compute object that needs to be computed
     is_compute_object = hasattr(to_maybe_compute, "compute")
-    try: 
+    try:
         if is_compute_object:
             # Compute the result based on the scheduler type
             if scheduler == "cloudpickle_processes" and num_workers > 0:
@@ -201,7 +204,9 @@ def wrap_processing(
                     )
             elif scheduler == "threads" or scheduler is None:
                 if num_workers < 2:
-                    result = to_maybe_compute.compute(scheduler="threads", num_workers=1)
+                    result = to_maybe_compute.compute(
+                        scheduler="threads", num_workers=1
+                    )
                 else:
                     with ThreadPoolExecutor(max_workers=num_workers) as executor:
                         result = to_maybe_compute.compute(
@@ -432,6 +437,7 @@ class ProcCounts:
     Maintains counts of items, processing tasks, and accumulation tasks
     for each dataset associated with a processor.
     """
+
     workflow: object  # really a DynamicDataReduction, but typing in python is a pain
     name: str
     fn: Callable[[ProcT], ResultT]
@@ -606,7 +612,9 @@ class ProcCounts:
         Args:
             progress_bars: The ProgressBar instance to add tasks to.
         """
-        progress_bars.add_task(self, "datasets", total=len(self.workflow.data["datasets"]))
+        progress_bars.add_task(
+            self, "datasets", total=len(self.workflow.data["datasets"])
+        )
         progress_bars.add_task(self, "items", total=self.items_total)
         progress_bars.add_task(self, "procs", total=self.proc_tasks_total)
         progress_bars.add_task(self, "accums", total=self.accum_tasks_total)
@@ -650,6 +658,7 @@ class DatasetCounts:
     Maintains counts of items, processing tasks, and accumulation tasks,
     and manages the state of pending accumulation tasks.
     """
+
     processor: ProcCounts
     name: str
     priority: int
@@ -782,6 +791,7 @@ class DynMapRedTask(abc.ABC):
     input_size: The size of the input data for this task.
     output_size: The size of the output data for this task.
     """
+
     manager: vine.Manager
     processor: ProcCounts
     dataset: DatasetCounts
@@ -1097,6 +1107,7 @@ class DynMapRedProcessingTask(DynMapRedTask):
     Creates a PythonTask that wraps the processing pipeline, including
     source post-processing, processor execution, and result serialization.
     """
+
     def create_task(
         self: Self,
         datum: Hashable,
@@ -1161,6 +1172,7 @@ class DynMapRedFetchTask(DynMapRedTask):
     Fetch tasks are always checkpoints and create a hard link to the target task's
     result file, effectively creating a checkpoint without remote recomputation at the scheduler.
     """
+
     def __post_init__(self):
         """
         Initialize fetch task as a checkpoint with high priority.
@@ -1228,6 +1240,7 @@ class DynMapRedAccumTask(DynMapRedTask):
     Accumulation tasks combine results from multiple input tasks using the
     accumulator function, optionally writing intermediate checkpoints.
     """
+
     def __post_init__(self):
         """
         Initialize accumulation task with high priority and compute input size.
@@ -1318,7 +1331,6 @@ class DynMapRedAccumTask(DynMapRedTask):
         return f"accumulating#{self.processor.name}#{self.dataset.name}"
 
 
-
 @dataclasses.dataclass
 class DynamicDataReduction:
     """
@@ -1327,6 +1339,7 @@ class DynamicDataReduction:
     Manages the complete lifecycle of processing data through multiple processors
     and datasets, handling task submission, accumulation, checkpointing, and result collection.
     """
+
     manager: vine.Manager
     processors: (
         Callable[[ProcT], ResultT]
@@ -1374,6 +1387,7 @@ class DynamicDataReduction:
         Sets up processors, configures the TaskVine manager, creates libraries,
         and prepares the environment for task execution.
         """
+
         def name(p):
             try:
                 n = p.__name__
@@ -1540,7 +1554,9 @@ class DynamicDataReduction:
             # Get resource information
             requested = task.resources_allocated
             measured = task.resources_measured
-            wall_time = task.get_metric("time_workers_execute_last") / 1e6 # convert microseconds to seconds
+            wall_time = (
+                task.get_metric("time_workers_execute_last") / 1e6
+            )  # convert microseconds to seconds
 
             print(f"Task {task.id} {task.description()}:")
             print(
@@ -1869,7 +1885,7 @@ class DynamicDataReduction:
         if current_time - self._last_progress_refresh_time < 1.0:
             return
         self._last_progress_refresh_time = current_time
-        
+
         for p in self.processors.values():
             p.refresh_progress_bars()
 
@@ -1994,6 +2010,7 @@ class ProgressBar:
     Manages multiple progress bars per processor, tracking datasets, items,
     processing tasks, and accumulation tasks.
     """
+
     @staticmethod
     def make_progress_bar():
         """
