@@ -14,6 +14,7 @@ import abc
 import dataclasses
 import concurrent.futures
 import multiprocessing as mp
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 
 import rich.progress
@@ -169,6 +170,8 @@ def wrap_processing(
 
     datum_post = source_postprocess(datum, **source_postprocess_args)
 
+    error_raised = False
+
     # Configure based on the scheduler type
     num_workers = remote_executor_args["num_workers"]
     scheduler = remote_executor_args["scheduler"]
@@ -176,13 +179,13 @@ def wrap_processing(
     # Process the data through the processor
     to_maybe_compute = processor(datum_post, **processor_args)
 
-    # Check if the result is a Dask object that needs to be computed
-    is_dask_object = hasattr(to_maybe_compute, "computex")
-    if is_dask_object:
-        # Compute the result based on the scheduler type
-        if scheduler == "cloudpickle_processes" and num_workers > 0:
-            # Use our custom ProcessPoolExecutor with cloudpickle
-            try:
+    # Check if the result is a compute object that needs to be computed
+    is_compute_object = hasattr(to_maybe_compute, "compute")
+    try: 
+        if is_compute_object:
+            # Compute the result based on the scheduler type
+            if scheduler == "cloudpickle_processes" and num_workers > 0:
+                # Use our custom ProcessPoolExecutor with cloudpickle
                 with CloudpickleProcessPoolExecutor(
                     max_workers=num_workers
                 ) as executor:
@@ -196,32 +199,32 @@ def wrap_processing(
                         max_width=1,
                         subgraphs=False,
                     )
-            except Exception as e:
-                warnings.warn(
-                    f"CloudpickleProcessPoolExecutor failed: {str(e)}. Falling back to default scheduler."
-                )
-                # result = to_maybe_compute.compute(num_workers=num_workers)
-                raise e
-        elif scheduler == "threads" or scheduler is None:
-            if num_workers < 2:
-                result = to_maybe_compute.compute(scheduler="threads", num_workers=1)
-            else:
-                with ThreadPoolExecutor(max_workers=num_workers) as executor:
-                    result = to_maybe_compute.compute(
-                        scheduler="threads", pool=executor, num_workers=num_workers
-                    )
-    else:
-        # If not a Dask object, just use the result directly and try to materialize it from virtual arrays
-        result = to_maybe_compute
+            elif scheduler == "threads" or scheduler is None:
+                if num_workers < 2:
+                    result = to_maybe_compute.compute(scheduler="threads", num_workers=1)
+                else:
+                    with ThreadPoolExecutor(max_workers=num_workers) as executor:
+                        result = to_maybe_compute.compute(
+                            scheduler="threads", pool=executor, num_workers=num_workers
+                        )
+        else:
+            # If not a compute object, just use the result directly
+            result = to_maybe_compute
+    except Exception as e:
+        warnings.warn(f"Materialization failed: {str(e)}")
+        error_raised = True
+        result = e
 
-        # Add some debugging information
-        try:
-            result = to_maybe_compute.compute()
-        except Exception as e:
-            warnings.warn(f"Materialization failed: {str(e)}")
+    try:
+        with lz4.frame.open("task_output.p", "wb") as fp:
+            cloudpickle.dump(result, fp)
+    except Exception as e:
+        warnings.warn(f"Serialization failed: {str(e)}")
+        error_raised = True
+        result = e
 
-    with lz4.frame.open("task_output.p", "wb") as fp:
-        cloudpickle.dump(result, fp)
+    if error_raised:
+        raise result
 
     try:
         return len(result)
@@ -1008,11 +1011,13 @@ class DynMapRedTask(abc.ABC):
         Clean up intermediate result files if appropriate.
 
         Intermediate results are only cleaned up if they are not checkpoints
-        and have a non-zero output size (indicating they are still needed).
+        and do not have a non-zero output size (indicating they are still needed).
         """
         # intermediate results can only be cleaned-up from a task with results at the manager
-        if not self.is_checkpoint() and self.output_size > 0:
+        if not self.is_checkpoint():
             return
+
+        # task is a checkpoint, thus it is safe to delete its inputs.
         self._cleanup_actual()
 
     def _cleanup_actual(self):
@@ -1537,7 +1542,7 @@ class DynamicDataReduction:
             measured = task.resources_measured
             wall_time = task.get_metric("time_workers_execute_last") / 1e6 # convert microseconds to seconds
 
-            print(f"Task {task.description()} resources:")
+            print(f"Task {task.id} {task.description()}:")
             print(
                 f"  Allocated: cores={requested.cores}, memory={requested.memory} MB, disk={requested.disk} MB"
             )
@@ -2066,6 +2071,7 @@ class ProgressBar:
         Returns:
             Result from rich.progress.Progress.stop_task.
         """
+        self._prog.update(self._ids[p][bar_type])
         return self._prog.stop_task(self._ids[p][bar_type], *args, **kwargs)
 
     def update(self, p, bar_type, *args, **kwargs):

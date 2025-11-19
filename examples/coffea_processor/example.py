@@ -15,7 +15,7 @@ def taskvine_with_ddr():
     filelist = {
         "ZJets": {
             "files": {
-                osp.abspath("samples/nano_dy.root"): {
+                osp.abspath("../samples/nano_dy.root"): {
                     "object_path": "Events",
                     "metadata": {"checkusermeta": True, "someusermeta": "hello"},
                     "num_entries": 40,
@@ -24,7 +24,7 @@ def taskvine_with_ddr():
         },
         "Data": {
             "files": {
-                osp.abspath("samples/nano_dimuon.root"): {
+                osp.abspath("../samples/nano_dimuon.root"): {
                     "object_path": "Events",
                     "metadata": {"checkusermeta": True, "someusermeta2": "world"},
                     "num_entries": 40,

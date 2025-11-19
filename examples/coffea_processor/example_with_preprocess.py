@@ -13,14 +13,14 @@ from coffea.processor.test_items import NanoEventsProcessor
 def main():
 
     # Create TaskVine manager
-    port = 9123
-    manager = vine.Manager(port=port, name="preprocess-example")
+    manager = vine.Manager(port=0, name="preprocess-example")
+    port = manager.port
 
     # Example data structure (before preprocessing)
     data = {
         "ZJets": {
             "files": {
-                osp.abspath("samples/nano_dy.root"): {
+                osp.abspath("../samples/nano_dy.root"): {
                     "object_path": "Events",
                     "metadata": {"checkusermeta": True, "someusermeta": "hello"},
                 },
@@ -29,7 +29,7 @@ def main():
         },
         "Data": {
             "files": {
-                osp.abspath("samples/nano_dimuon.root"): {
+                osp.abspath("../samples/nano_dimuon.root"): {
                     "object_path": "Events",
                     "metadata": {"checkusermeta": True, "someusermeta2": "world"},
                 }
