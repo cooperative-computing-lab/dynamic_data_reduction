@@ -599,8 +599,6 @@ class ProcCounts:
             task: The task that has completed.
         """
         self.dataset(task.dataset.name).add_completed(task)
-        if not task.successful():
-            return
 
     def initialize_progress_bars(self, progress_bars):
         """
@@ -681,7 +679,7 @@ class DatasetCounts:
         self.proc_tasks_submitted = 0
         self.accum_tasks_done = 0
         self.accum_tasks_submitted = 0
-        self.accum_tasks_checkpointed = 0
+        self.tasks_checkpointed = 0
 
     @property
     def all_proc_done(self):
@@ -702,7 +700,7 @@ class DatasetCounts:
             return
 
         if task.is_checkpoint():
-            self.accum_tasks_checkpointed += 1
+            self.tasks_checkpointed += 1
 
         if isinstance(task, DynMapRedProcessingTask):
             self.proc_tasks_done += 1
@@ -1202,16 +1200,21 @@ class DynMapRedFetchTask(DynMapRedTask):
             AssertionError: If input_tasks is None or does not contain exactly one task.
         """
         assert input_tasks is not None and len(input_tasks) == 1
-        target = input_tasks[0]
 
         task = vine.Task("ln -L task_input.p task_output.p")
         task.add_input(
-            target.result_file,
+            self.target.result_file,
             "task_input.p",  # , strict_input=(self.attempt_number == 1)
         )
         task.set_cores(1)
 
         return task
+
+    @property
+    def target(self):
+        if not self.input_tasks:
+            return None
+        return self.input_tasks[0]
 
     def description(self):
         """
@@ -1231,6 +1234,15 @@ class DynMapRedFetchTask(DynMapRedTask):
         """
         # resubmit with the same args
         return [{}]
+
+    @property
+    def output(self):
+        print(self.std_output)
+        print(self.target.output)
+        print(self.target.output_size)
+        if self.successful():
+            return self.target.output
+        return None
 
 
 class DynMapRedAccumTask(DynMapRedTask):
