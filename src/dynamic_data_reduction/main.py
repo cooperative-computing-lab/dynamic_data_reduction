@@ -1410,7 +1410,7 @@ class DynamicDataReduction:
         self._id_to_task = {}
         self.datasets_failed = set()
         self._last_progress_refresh_time = 0.0
-        self.error_filename = f"errors-{os.getpid()}.log"
+        self.error_filename = f"{self.manager.logging_directory}/errors.log"
 
         if isinstance(self.processors, list):
             nps = (len(self.processors) + 1) * priority_separation
