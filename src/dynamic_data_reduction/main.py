@@ -1854,7 +1854,7 @@ class DynamicDataReduction:
             error_msg_parts.append(f"Output:\n{task.std_output}")
 
         error_message = "\n".join(error_msg_parts)
-        
+
         # Format the log entry
         log_entry = (
             f"Task Type: {task.description()}\n"
@@ -1864,14 +1864,16 @@ class DynamicDataReduction:
             f"{error_message}\n"
             f"----------------------------------------\n"
         )
-        
+
         try:
             with open(self.error_filename, "a") as f:
                 f.write(log_entry)
             print(f"Error written to {self.error_filename}")
         except Exception as e:
             # If writing fails, print a warning but don't crash
-            print(f"Warning: Failed to write to error log file {self.error_filename}: {e}")
+            print(
+                f"Warning: Failed to write to error log file {self.error_filename}: {e}"
+            )
 
     def add_completed(self, task):
         """
@@ -1980,7 +1982,9 @@ class DynamicDataReduction:
                     failed_summary[p.name][ds_name] = ds.items_failed
 
         if failed_summary:
-            print("--------------------------------------------------------------------------------")
+            print(
+                "--------------------------------------------------------------------------------"
+            )
             print("\nFAILED ITEMS SUMMARY:")
             print("=" * 50)
             for proc_name, datasets in failed_summary.items():
@@ -1991,7 +1995,9 @@ class DynamicDataReduction:
             print("=" * 50)
 
             print(f"Errors written to {self.error_filename}")
-            print("--------------------------------------------------------------------------------")
+            print(
+                "--------------------------------------------------------------------------------"
+            )
 
         return result
 
