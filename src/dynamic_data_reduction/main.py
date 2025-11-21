@@ -1410,6 +1410,7 @@ class DynamicDataReduction:
         self._id_to_task = {}
         self.datasets_failed = set()
         self._last_progress_refresh_time = 0.0
+        self.error_filename = f"errors-{os.getpid()}.log"
 
         if isinstance(self.processors, list):
             nps = (len(self.processors) + 1) * priority_separation
@@ -1833,6 +1834,45 @@ class DynamicDataReduction:
 
         return max(0, min(max_active, max_batch, hungry))
 
+    def write_task_failure(self, task):
+        """
+        Write information about a permanently failed task to the error log file.
+
+        Appends failure information including task type, processor, dataset, datum,
+        and error details to the error_filename file. Opens the file in append mode
+        each time it's called (does not keep the file open).
+
+        Args:
+            task: The DynMapRedTask that failed permanently.
+        """
+        error_msg_parts = []
+        if task.result != "success":
+            error_msg_parts.append(f"Error: {task.result}")
+        if task.vine_task.exit_code:
+            error_msg_parts.append(f"Exit code: {task.vine_task.exit_code}")
+        if task.std_output:
+            error_msg_parts.append(f"Output:\n{task.std_output}")
+
+        error_message = "\n".join(error_msg_parts)
+        
+        # Format the log entry
+        log_entry = (
+            f"Task Type: {task.description()}\n"
+            f"Processor: {task.processor.name}\n"
+            f"Dataset: {task.dataset.name}\n"
+            f"Input:\n{task.datum}\n"
+            f"{error_message}\n"
+            f"----------------------------------------\n"
+        )
+        
+        try:
+            with open(self.error_filename, "a") as f:
+                f.write(log_entry)
+            print(f"Error written to {self.error_filename}")
+        except Exception as e:
+            # If writing fails, print a warning but don't crash
+            print(f"Warning: Failed to write to error log file {self.error_filename}: {e}")
+
     def add_completed(self, task):
         """
         Handle a completed task: update progress, create follow-up tasks, or handle failures.
@@ -1882,6 +1922,7 @@ class DynamicDataReduction:
                     # Track failed items when a processing task cannot be resubmitted
                     if isinstance(task, DynMapRedProcessingTask):
                         task.dataset.items_failed += task.input_size
+                    self.write_task_failure(task)
                     self.add_accum_task(task.dataset, None)
                     print(
                         f"task {task.datum} could not be completed\n{task.std_output}\n---\n{task.output}"
@@ -1939,6 +1980,7 @@ class DynamicDataReduction:
                     failed_summary[p.name][ds_name] = ds.items_failed
 
         if failed_summary:
+            print("--------------------------------------------------------------------------------")
             print("\nFAILED ITEMS SUMMARY:")
             print("=" * 50)
             for proc_name, datasets in failed_summary.items():
@@ -1948,16 +1990,8 @@ class DynamicDataReduction:
                 print()
             print("=" * 50)
 
-        if self.datasets_failed:
-            print("WARNING: The following datasets were not completely processed:")
-            print(
-                "--------------------------------------------------------------------------------"
-            )
-            for name in self.datasets_failed:
-                print(name)
-            print(
-                "--------------------------------------------------------------------------------"
-            )
+            print(f"Errors written to {self.error_filename}")
+            print("--------------------------------------------------------------------------------")
 
         return result
 
