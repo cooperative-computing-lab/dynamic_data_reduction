@@ -4,6 +4,7 @@ Coffea dataset tools for dynamic data reduction.
 """
 
 from typing import Dict, Any, Optional, List
+import os
 import ndcctools.taskvine as vine
 from rich.progress import (
     Progress,
@@ -73,7 +74,12 @@ def count_events_in_files(
 
 
 def create_counting_task(
-    file_paths: List[str], tree_name: str, timeout: int
+    file_paths: List[str],
+    tree_name: str,
+    timeout: int,
+    environment: Optional[vine.File] = None,
+    x509_proxy_file: Optional[vine.File] = None,
+    environment_variables: Optional[Dict[str, str]] = None,
 ) -> vine.Task:
     task = vine.PythonTask(count_events_in_files, file_paths, tree_name, timeout)
 
@@ -81,6 +87,19 @@ def create_counting_task(
     task.set_cores(1)
     task.set_time_max(2 * timeout)  # Longer than our timeout as a fallback
     task.set_retries(2)
+
+    # Add poncho environment if provided
+    if environment:
+        task.add_environment(environment)
+
+    # Add x509_proxy file if provided
+    if x509_proxy_file:
+        task.add_input(x509_proxy_file, "proxy.pem")
+
+    # Set environment variables if provided
+    if environment_variables:
+        for env_var, value in environment_variables.items():
+            task.set_env_var(env_var, value)
 
     return task
 
@@ -167,6 +186,9 @@ def preprocess(
     max_retries: int = 3,
     show_progress: bool = True,
     batch_size: int = 5,
+    environment: Optional[str] = None,
+    x509_proxy: Optional[str] = None,
+    environment_variables: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     """
     Preprocess data by counting events in ROOT files using TaskVine.
@@ -179,6 +201,9 @@ def preprocess(
         max_retries: Maximum number of retries for failed files (default: 3)
         show_progress: Whether to show progress bar (default: True)
         batch_size: Number of files to submit in initial batches (default: 5)
+        environment: Path to Poncho (conda) environment file (default: None)
+        x509_proxy: Path to x509 proxy file (default: None)
+        environment_variables: Dictionary of environment variables to set (default: None)
 
     Returns:
         Preprocessed data structure with num_entries added to each file
@@ -186,6 +211,29 @@ def preprocess(
 
     # Initialize result data structure
     result_data = _initialize_result_data(data)
+
+    # Declare poncho environment if provided
+    env_file = None
+    if environment:
+        env_file = manager.declare_poncho(environment)
+
+    # Declare x509_proxy file and set up environment variables if provided
+    x509_proxy_file = None
+    task_env_vars = {}
+    if environment_variables:
+        task_env_vars.update(environment_variables)
+
+    # Determine proxy path: use provided path or try default location
+    proxy_path = x509_proxy
+    if not proxy_path:
+        uid = os.getuid()
+        default_proxy_path = f"/tmp/x509_u{uid}"
+        if os.path.exists(default_proxy_path):
+            proxy_path = default_proxy_path
+
+    if proxy_path:
+        x509_proxy_file = manager.declare_file(proxy_path, cache=True)
+        task_env_vars["X509_USER_PROXY"] = "proxy.pem"
 
     # Collect all files that need processing
     files_to_process = []
@@ -252,7 +300,14 @@ def preprocess(
 
             # Create task to count events for the entire batch
             file_paths = [fp for _, fp, _ in batch_to_submit]
-            task = create_counting_task(file_paths, tree_name, timeout)
+            task = create_counting_task(
+                file_paths,
+                tree_name,
+                timeout,
+                environment=env_file,
+                x509_proxy_file=x509_proxy_file,
+                environment_variables=task_env_vars if task_env_vars else None,
+            )
 
             # Submit task
             task_id = manager.submit(task)
