@@ -225,10 +225,15 @@ fi
 export XRD_LOGLEVEL=Info
 #export HADOOP_ROOT_LOGGER=DEBUG,console
 
-if [[ -f proxy.pem ]]
+if [[ -z "$X509_USER_PROXY" ]]
 then
-    export X509_USER_PROXY=$(realpath proxy.pem)
+    if [[ -f proxy.pem ]]
+    then
+        export X509_USER_PROXY=$(realpath proxy.pem)
+    fi
 fi
+
+realpath .
 
 echo $X509_USER_PROXY
 
