@@ -621,31 +621,54 @@ class ProcCounts:
         """
         Refresh all progress bars for this processor with current statistics.
         """
+        items_total = self.items_total
+        if items_total != self.workflow.progress_bars.get_task(self, "items").total:
+            self.workflow.progress_bars.update(
+                self,
+                "items",
+                total=items_total,
+            )
+
+        proc_tasks_total = self.proc_tasks_total
+        if proc_tasks_total != self.workflow.progress_bars.get_task(self, "procs").total:
+            self.workflow.progress_bars.update(
+                self,
+                "procs",
+                total=proc_tasks_total,
+            )
+
+        accum_tasks_total = self.accum_tasks_total
+        if accum_tasks_total != self.workflow.progress_bars.get_task(self, "accums").total:
+            self.workflow.progress_bars.update(
+                self,
+                "accums",
+                total=accum_tasks_total,
+            )
+
         self.workflow.progress_bars.update(
             self,
             "items",
-            total=self.items_total,
             completed=self.items_done + self.items_failed,
             description=f"items ({self.name}): {self.items_active} active, {self.items_failed} failed",
-            refresh=True,
+            # refresh=True,
         )
+
         self.workflow.progress_bars.update(
             self,
             "procs",
-            total=self.proc_tasks_total,
             completed=self.proc_tasks_done,
             description=f"procs ({self.name}): {self.proc_tasks_active} active, {self.proc_tasks_failed} failed",
-            refresh=True,
+            # refresh=True,
         )
+
         self.workflow.progress_bars.update(
             self,
             "accums",
-            total=self.accum_tasks_total,
             completed=self.accum_tasks_done,
             description=f"accums ({self.name}): {self.accum_tasks_active} active",
-            refresh=True,
+            # refresh=True,
         )
-        self.workflow.progress_bars.refresh()
+        # self.workflow.progress_bars.refresh()
 
 
 @dataclasses.dataclass
@@ -2188,7 +2211,16 @@ class ProgressBar:
         """
         return self._prog.refresh(*args, **kwargs)
 
-    # redirect anything else to rich_bar
+    def get_task(self, p, bar_type):
+        """
+        Get a progress bar task.
+
+        Args:
+            p: The processor (ProcCounts) this bar belongs to.
+            bar_type: Type of progress bar to get.
+        """
+        return self._prog.tasks[self._ids[p][bar_type]]
+
     def __getattr__(self, name):
         """
         Redirect unknown attribute access to the underlying rich.progress.Progress instance.
